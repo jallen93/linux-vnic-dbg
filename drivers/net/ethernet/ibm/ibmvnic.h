@@ -29,6 +29,7 @@
 #define IBMVNIC_NAME		"ibmvnic"
 #define IBMVNIC_DRIVER_VERSION	"1.0.1"
 #define IBMVNIC_INVALID_MAP	-1
+#define IBMVNIC_STATS_TIMEOUT	1
 /* basic structures plus 100 2k buffers */
 #define IBMVNIC_IO_ENTITLEMENT_DEFAULT	610305
 
@@ -126,6 +127,15 @@ struct ibmvnic_fw_component {
 	u8 trace_on;
 	u8 reserved[7];
 	u8 description[192];
+} __packed __aligned(8);
+
+struct ibmvnic_fw_trace_entry {
+	__be32 trace_id;
+	u8 num_valid_data;
+	u8 reserved[3];
+	__be64 pmc_registers;
+	__be64 timebase;
+	__be64 trace_data[5];
 } __packed __aligned(8);
 
 struct ibmvnic_statistics {
@@ -374,6 +384,77 @@ struct ibmvnic_control_ip_offload {
 	struct ibmvnic_rc rc;
 } __packed __aligned(8);
 
+struct ibmvnic_request_dump_size {
+	u8 first;
+	u8 cmd;
+	u8 reserved[6];
+	__be32 len;
+	struct ibmvnic_rc rc;
+} __packed __aligned(8);
+
+struct ibmvnic_request_dump {
+	u8 first;
+	u8 cmd;
+	u8 reserved1[2];
+	__be32 ioba;
+	__be32 len;
+	u8 reserved2[4];
+} __packed __aligned(8);
+
+struct ibmvnic_request_dump_rsp {
+	u8 first;
+	u8 cmd;
+	u8 reserved[6];
+	__be32 dumped_len;
+	struct ibmvnic_rc rc;
+} __packed __aligned(8);
+
+struct ibmvnic_request_ras_comp_num {
+	u8 first;
+	u8 cmd;
+	u8 reserved1[2];
+	__be32 num_components;
+	u8 reserved2[4];
+	struct ibmvnic_rc rc;
+} __packed __aligned(8);
+
+struct ibmvnic_request_ras_comps {
+	u8 first;
+	u8 cmd;
+	u8 reserved[2];
+	__be32 ioba;
+	__be32 len;
+	struct ibmvnic_rc rc;
+} __packed __aligned(8);
+
+struct ibmvnic_control_ras {
+	u8 first;
+	u8 cmd;
+	u8 correlator;
+	u8 level;
+	u8 op;
+#define IBMVNIC_TRACE_LEVEL	1
+#define IBMVNIC_ERROR_LEVEL	2
+#define IBMVNIC_TRACE_PAUSE	3
+#define IBMVNIC_TRACE_RESUME	4
+#define IBMVNIC_TRACE_ON		5
+#define IBMVNIC_TRACE_OFF		6
+#define IBMVNIC_CHG_TRACE_BUFF_SZ	7
+	u8 trace_buff_sz[3];
+	u8 reserved[4];
+	struct ibmvnic_rc rc;
+} __packed __aligned(8);
+
+struct ibmvnic_collect_fw_trace {
+	u8 first;
+	u8 cmd;
+	u8 correlator;
+	u8 reserved;
+	__be32 ioba;
+	__be32 len;
+	struct ibmvnic_rc rc;
+} __packed __aligned(8);
+
 struct ibmvnic_request_statistics {
 	u8 first;
 	u8 cmd;
@@ -383,6 +464,15 @@ struct ibmvnic_request_statistics {
 	__be32 ioba;
 	__be32 len;
 	u8 reserved[4];
+} __packed __aligned(8);
+
+struct ibmvnic_request_debug_stats {
+	u8 first;
+	u8 cmd;
+	u8 reserved[2];
+	__be32 ioba;
+	__be32 len;
+	struct ibmvnic_rc rc;
 } __packed __aligned(8);
 
 struct ibmvnic_error_indication {
@@ -481,6 +571,15 @@ struct ibmvnic_acl_query {
 	u8 reserved2[4];
 } __packed __aligned(8);
 
+struct ibmvnic_tune {
+	u8 first;
+	u8 cmd;
+	u8 reserved1[2];
+	__be32 ioba;
+	__be32 len;
+	u8 reserved2[4];
+} __packed __aligned(8);
+
 struct ibmvnic_request_map {
 	u8 first;
 	u8 cmd;
@@ -555,8 +654,22 @@ union ibmvnic_crq {
 	struct ibmvnic_query_ip_offload query_ip_offload_rsp;
 	struct ibmvnic_control_ip_offload control_ip_offload;
 	struct ibmvnic_control_ip_offload control_ip_offload_rsp;
+	struct ibmvnic_request_dump_size request_dump_size;
+	struct ibmvnic_request_dump_size request_dump_size_rsp;
+	struct ibmvnic_request_dump request_dump;
+	struct ibmvnic_request_dump_rsp request_dump_rsp;
+	struct ibmvnic_request_ras_comp_num request_ras_comp_num;
+	struct ibmvnic_request_ras_comp_num request_ras_comp_num_rsp;
+	struct ibmvnic_request_ras_comps request_ras_comps;
+	struct ibmvnic_request_ras_comps request_ras_comps_rsp;
+	struct ibmvnic_control_ras control_ras;
+	struct ibmvnic_control_ras control_ras_rsp;
+	struct ibmvnic_collect_fw_trace collect_fw_trace;
+	struct ibmvnic_collect_fw_trace collect_fw_trace_rsp;
 	struct ibmvnic_request_statistics request_statistics;
 	struct ibmvnic_generic_crq request_statistics_rsp;
+	struct ibmvnic_request_debug_stats request_debug_stats;
+	struct ibmvnic_request_debug_stats request_debug_stats_rsp;
 	struct ibmvnic_error_indication error_indication;
 	struct ibmvnic_request_error_info request_error_info;
 	struct ibmvnic_request_error_rsp request_error_rsp;
@@ -572,6 +685,8 @@ union ibmvnic_crq {
 	struct ibmvnic_acl_change_indication acl_change_indication;
 	struct ibmvnic_acl_query acl_query;
 	struct ibmvnic_generic_crq acl_query_rsp;
+	struct ibmvnic_tune tune;
+	struct ibmvnic_generic_crq tune_rsp;
 	struct ibmvnic_request_map request_map;
 	struct ibmvnic_request_map_rsp request_map_rsp;
 	struct ibmvnic_request_unmap request_unmap;
@@ -657,10 +772,22 @@ enum ibmvnic_commands {
 	ERROR_INDICATION = 0x08,
 	REQUEST_ERROR_INFO = 0x09,
 	REQUEST_ERROR_RSP = 0x89,
+	REQUEST_DUMP_SIZE = 0x0A,
+	REQUEST_DUMP_SIZE_RSP = 0x8A,
+	REQUEST_DUMP = 0x0B,
+	REQUEST_DUMP_RSP = 0x8B,
 	LOGICAL_LINK_STATE = 0x0C,
 	LOGICAL_LINK_STATE_RSP = 0x8C,
 	REQUEST_STATISTICS = 0x0D,
 	REQUEST_STATISTICS_RSP = 0x8D,
+	REQUEST_RAS_COMP_NUM = 0x0E,
+	REQUEST_RAS_COMP_NUM_RSP = 0x8E,
+	REQUEST_RAS_COMPS = 0x0F,
+	REQUEST_RAS_COMPS_RSP = 0x8F,
+	CONTROL_RAS = 0x10,
+	CONTROL_RAS_RSP = 0x90,
+	COLLECT_FW_TRACE = 0x11,
+	COLLECT_FW_TRACE_RSP = 0x91,
 	LINK_STATE_INDICATION = 0x12,
 	CHANGE_MAC_ADDR = 0x13,
 	CHANGE_MAC_ADDR_RSP = 0x93,
@@ -670,6 +797,8 @@ enum ibmvnic_commands {
 	GET_VPD_SIZE_RSP = 0x95,
 	GET_VPD = 0x16,
 	GET_VPD_RSP = 0x96,
+	TUNE = 0x17,
+	TUNE_RSP = 0x97,
 	QUERY_IP_OFFLOAD = 0x18,
 	QUERY_IP_OFFLOAD_RSP = 0x98,
 	CONTROL_IP_OFFLOAD = 0x19,
@@ -677,6 +806,8 @@ enum ibmvnic_commands {
 	ACL_CHANGE_INDICATION = 0x1A,
 	ACL_QUERY = 0x1B,
 	ACL_QUERY_RSP = 0x9B,
+	REQUEST_DEBUG_STATS = 0x1C,
+	REQUEST_DEBUG_STATS_RSP = 0x9C,
 	QUERY_MAP = 0x1D,
 	QUERY_MAP_RSP = 0x9D,
 	REQUEST_MAP = 0x1E,
@@ -794,6 +925,13 @@ struct ibmvnic_error_buff {
 	__be32 error_id;
 };
 
+struct ibmvnic_fw_comp_internal {
+	struct ibmvnic_adapter *adapter;
+	int num;
+	struct debugfs_blob_wrapper desc_blob;
+	int paused;
+};
+
 struct ibmvnic_inflight_cmd {
 	union ibmvnic_crq crq;
 	struct list_head list;
@@ -858,7 +996,18 @@ struct ibmvnic_adapter {
 	struct list_head errors;
 	spinlock_t error_list_lock;
 
+	/* debugfs */
+	struct dentry *debugfs_dir;
+	struct dentry *debugfs_dump;
 	struct completion fw_done;
+	char *dump_data;
+	dma_addr_t dump_data_token;
+	int dump_data_size;
+	int ras_comp_num;
+	struct ibmvnic_fw_component *ras_comps;
+	struct ibmvnic_fw_comp_internal *ras_comp_int;
+	dma_addr_t ras_comps_tok;
+	struct dentry *ras_comps_ent;
 
 	/* in-flight commands that allocate and/or map memory*/
 	struct list_head inflight;
