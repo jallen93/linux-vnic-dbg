@@ -112,6 +112,7 @@ static void send_request_unmap(struct ibmvnic_adapter *, u8);
 static void send_login(struct ibmvnic_adapter *adapter);
 static void send_cap_queries(struct ibmvnic_adapter *adapter);
 static int init_sub_crq_irqs(struct ibmvnic_adapter *adapter);
+static void ibmvnic_reset_stats(struct net_device *netdev);
 
 struct ibmvnic_stat {
 	char name[ETH_GSTRING_LEN];
@@ -507,6 +508,8 @@ static int ibmvnic_open(struct net_device *netdev)
 
 	for (i = 0; i < adapter->req_tx_queues; i++)
 		enable_scrq_irq(adapter, adapter->tx_scrq[i]);
+
+	ibmvnic_reset_stats(netdev);
 
 	memset(&crq, 0, sizeof(crq));
 	crq.logical_link_state.first = IBMVNIC_CRQ_CMD;
@@ -1203,6 +1206,25 @@ static void ibmvnic_get_ethtool_stats(struct net_device *dev,
 	for (i = 0; i < ARRAY_SIZE(ibmvnic_stats); i++)
 		data[i] = be64_to_cpu(IBMVNIC_GET_STAT(adapter,
 					ibmvnic_stats[i].offset));
+}
+
+static void ibmvnic_reset_stats(struct net_device *netdev)
+{
+	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
+	union ibmvnic_crq crq;
+
+	memset(&crq, 0, sizeof(crq));
+	crq.request_statistics.first = IBMVNIC_CRQ_CMD;
+	crq.request_statistics.cmd = REQUEST_STATISTICS;
+	crq.request_statistics.ioba = cpu_to_be32(adapter->stats_token);
+	crq.request_statistics.len =
+	    cpu_to_be32(sizeof(struct ibmvnic_statistics));
+	crq.request_statistics.flags = 0x40;
+
+	/* Wait for data to be written */
+	init_completion(&adapter->stats_done);
+	ibmvnic_send_crq(adapter, &crq);
+	wait_for_completion(&adapter->stats_done);
 }
 
 static const struct ethtool_ops ibmvnic_ethtool_ops = {
