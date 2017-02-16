@@ -564,8 +564,6 @@ static int ibmvnic_close(struct net_device *netdev)
 
 	adapter->closing = true;
 
-	release_sub_crqs(adapter);
-
 	for (i = 0; i < adapter->req_rx_queues; i++)
 		napi_disable(&adapter->napi[i]);
 
@@ -608,6 +606,8 @@ static int ibmvnic_close(struct net_device *netdev)
 	}
 	kfree(adapter->rx_pool);
 	adapter->rx_pool = NULL;
+
+	release_sub_crqs(adapter);
 
 	adapter->closing = false;
 
