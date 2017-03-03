@@ -1052,6 +1052,5 @@ struct ibmvnic_adapter {
 	struct work_struct ibmvnic_xport;
 	struct tasklet_struct tasklet;
 	bool failover;
-	bool logged_in;
 	bool is_up;
 };
