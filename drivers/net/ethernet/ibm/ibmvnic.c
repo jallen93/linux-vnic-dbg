@@ -385,53 +385,31 @@ static int ibmvnic_open(struct net_device *netdev)
 	int rc = 0;
 	int i, j;
 
-	if (adapter->logged_in) {
-		for (i = 0; i < adapter->req_rx_queues; i++)
-			napi_enable(&adapter->napi[i]);
-
-		replenish_pools(adapter);
-
-		memset(&crq, 0, sizeof(crq));
-		crq.logical_link_state.first = IBMVNIC_CRQ_CMD;
-		crq.logical_link_state.cmd = LOGICAL_LINK_STATE;
-		crq.logical_link_state.link_state = IBMVNIC_LOGICAL_LNK_UP;
-		ibmvnic_send_crq(adapter, &crq);
-
-		netif_tx_start_all_queues(netdev);
-
-		return 0;
-	}
-
 	reinit_completion(&adapter->init_done);
 	send_login(adapter);
-	if (!wait_for_completion_timeout(&adapter->init_done,
-					 timeout)) {
+	if (!wait_for_completion_timeout(&adapter->init_done, timeout)) {
 		dev_err(dev, "Login timeout\n");
 		return -1;
 	}
 
-	while (adapter->renegotiate) {
+	while(adapter->renegotiate) {
 		adapter->renegotiate = false;
 		release_sub_crqs_no_irqs(adapter);
 
 		reinit_completion(&adapter->init_done);
 		send_cap_queries(adapter);
-		if (!wait_for_completion_timeout(&adapter->init_done,
-						 timeout)) {
+		if (!wait_for_completion_timeout(&adapter->init_done, timeout)) {
 			dev_err(dev, "Capabilities query timeout\n");
 			return -1;
 		}
 
 		reinit_completion(&adapter->init_done);
 		send_login(adapter);
-		if (!wait_for_completion_timeout(&adapter->init_done,
-						 timeout)) {
+		if (!wait_for_completion_timeout(&adapter->init_done, timeout)) {
 			dev_err(dev, "Login timeout\n");
 			return -1;
 		}
 	}
-
-	adapter->logged_in = true;
 
 	rc = netif_set_real_num_tx_queues(netdev, adapter->req_tx_queues);
 	if (rc) {
@@ -579,7 +557,7 @@ alloc_napi_failed:
 	return -ENOMEM;
 }
 
-static int failover_close(struct net_device *netdev)
+static int ibmvnic_close(struct net_device *netdev)
 {
 	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
 	struct device *dev = &adapter->vdev->dev;
@@ -632,31 +610,6 @@ static int failover_close(struct net_device *netdev)
 	adapter->rx_pool = NULL;
 
 	release_sub_crqs(adapter);
-
-	adapter->closing = false;
-
-	return 0;
-}
-
-static int ibmvnic_close(struct net_device *netdev)
-{
-	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
-	union ibmvnic_crq crq;
-	int i;
-
-	adapter->closing = true;
-
-	for (i = 0; i < adapter->req_rx_queues; i++)
-		napi_disable(&adapter->napi[i]);
-
-	if (!adapter->failover)
-		netif_tx_stop_all_queues(netdev);
-
-	memset(&crq, 0, sizeof(crq));
-	crq.logical_link_state.first = IBMVNIC_CRQ_CMD;
-	crq.logical_link_state.cmd = LOGICAL_LINK_STATE;
-	crq.logical_link_state.link_state = IBMVNIC_LOGICAL_LNK_DN;
-	ibmvnic_send_crq(adapter, &crq);
 
 	adapter->closing = false;
 
@@ -3786,7 +3739,7 @@ static void handle_crq_init_rsp(struct work_struct *work)
 		release_sub_crqs(adapter);
 		if (netif_running(netdev)) {
 			netif_tx_disable(netdev);
-			failover_close(netdev);
+			ibmvnic_close(netdev);
 			restart = true;
 		}
 	}
@@ -3943,47 +3896,10 @@ static int ibmvnic_remove(struct vio_dev *dev)
 {
 	struct net_device *netdev = dev_get_drvdata(&dev->dev);
 	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
-	int i;
 
 	unregister_netdev(netdev);
 
-	if (adapter->bounce_buffer) {
-		if (!dma_mapping_error(&adapter->vdev->dev,
-				       adapter->bounce_buffer_dma)) {
-			dma_unmap_single(&adapter->vdev->dev,
-					 adapter->bounce_buffer_dma,
-					 adapter->bounce_buffer_size,
-					 DMA_BIDIRECTIONAL);
-			adapter->bounce_buffer_dma = DMA_ERROR_CODE;
-		}
-		kfree(adapter->bounce_buffer);
-		adapter->bounce_buffer = NULL;
-	}
-
-	for (i = 0; i < be32_to_cpu(adapter->login_rsp_buf->num_txsubm_subcrqs);
-	     i++) {
-		kfree(adapter->tx_pool[i].tx_buff);
-		free_long_term_buff(adapter,
-				    &adapter->tx_pool[i].long_term_buff);
-		kfree(adapter->tx_pool[i].free_map);
-	}
-	kfree(adapter->tx_pool);
-	adapter->tx_pool = NULL;
-
-	for (i = 0; i < be32_to_cpu(adapter->login_rsp_buf->num_rxadd_subcrqs);
-	     i++) {
-		free_rx_pool(adapter, &adapter->rx_pool[i]);
-		free_long_term_buff(adapter,
-				    &adapter->rx_pool[i].long_term_buff);
-	}
-	kfree(adapter->rx_pool);
-	adapter->rx_pool = NULL;
-
-	release_sub_crqs(adapter);
-
 	ibmvnic_release_crq_queue(adapter);
-
-	adapter->logged_in = false;
 
 	if (adapter->debugfs_dir && !IS_ERR(adapter->debugfs_dir))
 		debugfs_remove_recursive(adapter->debugfs_dir);
