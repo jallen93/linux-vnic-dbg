@@ -1053,4 +1053,5 @@ struct ibmvnic_adapter {
 	struct tasklet_struct tasklet;
 	bool failover;
 	bool is_up;
+	bool is_closed;
 };
