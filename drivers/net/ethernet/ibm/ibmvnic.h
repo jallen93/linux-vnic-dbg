@@ -1049,7 +1049,7 @@ struct ibmvnic_adapter {
 	u8 map_id;
 
 	struct work_struct vnic_crq_init;
-	struct work_struct ibmvnic_xport;
+	struct delayed_work ibmvnic_xport;
 	struct tasklet_struct tasklet;
 	bool failover;
 	bool is_up;

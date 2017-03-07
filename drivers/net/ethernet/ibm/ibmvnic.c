@@ -207,7 +207,7 @@ static void free_long_term_buff(struct ibmvnic_adapter *adapter,
 	struct device *dev = &adapter->vdev->dev;
 
 	dma_free_coherent(dev, ltb->size, ltb->buff, ltb->addr);
-	if (!adapter->failover)
+	if (!adapter->failover && !adapter->migrated)
 		send_request_unmap(adapter, ltb->map_id);
 }
 
@@ -3312,24 +3312,91 @@ static void ibmvnic_free_inflight(struct ibmvnic_adapter *adapter)
 	spin_unlock_irqrestore(&adapter->inflight_lock, flags);
 }
 
+static int post_migr_cleanup(struct ibmvnic_adapter *adapter)
+{
+	struct net_device *netdev = adapter->netdev;
+	struct device *dev = &adapter->vdev->dev;
+	int i;
+
+	netif_tx_disable(netdev);
+
+	for (i = 0; i < adapter->req_rx_queues; i++)
+		netif_napi_del(&adapter->napi[i]);
+
+	if (adapter->bounce_buffer) {
+		if (!dma_mapping_error(dev, adapter->bounce_buffer_dma)) {
+			dma_unmap_single(dev,
+					 adapter->bounce_buffer_dma,
+					 adapter->bounce_buffer_size,
+					 DMA_BIDIRECTIONAL);
+			adapter->bounce_buffer_dma = DMA_ERROR_CODE;
+		}
+		kfree(adapter->bounce_buffer);
+		adapter->bounce_buffer = NULL;
+	}
+
+	for (i = 0; i < be32_to_cpu(adapter->login_rsp_buf->num_txsubm_subcrqs);
+		 i++) {
+		kfree(adapter->tx_pool[i].tx_buff);
+		free_long_term_buff(adapter,
+				    &adapter->tx_pool[i].long_term_buff);
+		kfree(adapter->tx_pool[i].free_map);
+	}
+	kfree(adapter->tx_pool);
+	adapter->tx_pool = NULL;
+
+	for (i = 0; i < be32_to_cpu(adapter->login_rsp_buf->num_rxadd_subcrqs);
+		 i++) {
+		free_rx_pool(adapter, &adapter->rx_pool[i]);
+		free_long_term_buff(adapter,
+				    &adapter->rx_pool[i].long_term_buff);
+	}
+	kfree(adapter->rx_pool);
+	adapter->rx_pool = NULL;
+
+	return 0;
+}
+
 static void ibmvnic_xport_event(struct work_struct *work)
 {
 	struct ibmvnic_adapter *adapter = container_of(work,
 						       struct ibmvnic_adapter,
-						       ibmvnic_xport);
+						       ibmvnic_xport.work);
+	unsigned long timeout = msecs_to_jiffies(30000);
 	struct device *dev = &adapter->vdev->dev;
+	bool restart;
 	long rc;
 
 	ibmvnic_free_inflight(adapter);
 	release_sub_crqs(adapter);
 	if (adapter->migrated) {
+		if (netif_running(adapter->netdev)) {
+			post_migr_cleanup(adapter);
+			restart = true;
+		}
 		rc = ibmvnic_reenable_crq_queue(adapter);
-		if (rc)
+		if (rc) {
 			dev_err(dev, "Error after enable rc=%ld\n", rc);
-		adapter->migrated = false;
+			return;
+		}
+		reinit_completion(&adapter->init_done);
 		rc = ibmvnic_send_crq_init(adapter);
-		if (rc)
+		if (rc) {
 			dev_err(dev, "Error sending init rc=%ld\n", rc);
+			return;
+		}
+		if (!wait_for_completion_timeout(&adapter->init_done, timeout)) {
+			dev_err(dev, "Timeout during post-migration init\n");
+			return;
+		}
+		adapter->migrated = false;
+		if (restart) {
+			rc = ibmvnic_open(adapter->netdev);
+			if (rc)
+				dev_err(dev, "Error logging in to Server rc=%ld\n",
+					rc);
+		}
+		netif_carrier_on(adapter->netdev);
 	}
 }
 
@@ -3366,11 +3433,18 @@ static void ibmvnic_handle_crq(union ibmvnic_crq *crq,
 		return;
 	case IBMVNIC_CRQ_XPORT_EVENT:
 		if (gen_crq->cmd == IBMVNIC_PARTITION_MIGRATED) {
+			netif_carrier_off(netdev);
 			dev_info(dev, "Re-enabling adapter\n");
 			adapter->migrated = true;
 			adapter->is_up = false;
-			schedule_work(&adapter->ibmvnic_xport);
+			schedule_delayed_work(&adapter->ibmvnic_xport, 2 * HZ);
 		} else if (gen_crq->cmd == IBMVNIC_DEVICE_FAILOVER) {
+			if (adapter->migrated) {
+				rc =
+				  cancel_delayed_work(&adapter->ibmvnic_xport);
+				if (rc)
+					adapter->migrated = false;
+			}
 			dev_info(dev, "Backing device failover detected\n");
 			netif_carrier_off(netdev);
 			adapter->failover = true;
@@ -3379,7 +3453,7 @@ static void ibmvnic_handle_crq(union ibmvnic_crq *crq,
 			/* The adapter lost the connection */
 			dev_err(dev, "Virtual Adapter failed (rc=%d)\n",
 				gen_crq->cmd);
-			schedule_work(&adapter->ibmvnic_xport);
+			schedule_delayed_work(&adapter->ibmvnic_xport, 2 * HZ);
 		}
 		return;
 	case IBMVNIC_CRQ_CMD_RSP:
@@ -3823,7 +3897,7 @@ static int ibmvnic_probe(struct vio_dev *dev, const struct vio_device_id *id)
 	SET_NETDEV_DEV(netdev, &dev->dev);
 
 	INIT_WORK(&adapter->vnic_crq_init, handle_crq_init_rsp);
-	INIT_WORK(&adapter->ibmvnic_xport, ibmvnic_xport_event);
+	INIT_DELAYED_WORK(&adapter->ibmvnic_xport, ibmvnic_xport_event);
 
 	spin_lock_init(&adapter->stats_lock);
 
