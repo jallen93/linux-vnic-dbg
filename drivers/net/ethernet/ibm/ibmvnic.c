@@ -372,10 +372,41 @@ static void free_rx_pool(struct ibmvnic_adapter *adapter,
 	pool->rx_buff = NULL;
 }
 
-static int ibmvnic_open(struct net_device *netdev)
+static int ibmvnic_login(struct net_device *netdev)
 {
 	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
 	unsigned long timeout = msecs_to_jiffies(30000);
+	struct device *dev = &adapter->vdev->dev;
+
+	do {
+		if (adapter->renegotiate) {
+			adapter->renegotiate = false;
+			release_sub_crqs_no_irqs(adapter);
+
+			reinit_completion(&adapter->init_done);
+			send_cap_queries(adapter);
+			if (!wait_for_completion_timeout(&adapter->init_done,
+							 timeout)) {
+				dev_err(dev, "Capabilities query timeout\n");
+				return -1;
+			}
+		}
+
+		reinit_completion(&adapter->init_done);
+		send_login(adapter);
+		if (!wait_for_completion_timeout(&adapter->init_done,
+						 timeout)) {
+			dev_err(dev, "Login timeout\n");
+			return -1;
+		}
+	} while (adapter->renegotiate);
+
+	return 0;
+}
+
+static int ibmvnic_open(struct net_device *netdev)
+{
+	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
 	struct device *dev = &adapter->vdev->dev;
 	struct ibmvnic_tx_pool *tx_pool;
 	union ibmvnic_crq crq;
@@ -385,31 +416,9 @@ static int ibmvnic_open(struct net_device *netdev)
 	int rc = 0;
 	int i, j;
 
-	reinit_completion(&adapter->init_done);
-	send_login(adapter);
-	if (!wait_for_completion_timeout(&adapter->init_done, timeout)) {
-		dev_err(dev, "Login timeout\n");
-		return -1;
-	}
-
-	while(adapter->renegotiate) {
-		adapter->renegotiate = false;
-		release_sub_crqs_no_irqs(adapter);
-
-		reinit_completion(&adapter->init_done);
-		send_cap_queries(adapter);
-		if (!wait_for_completion_timeout(&adapter->init_done, timeout)) {
-			dev_err(dev, "Capabilities query timeout\n");
-			return -1;
-		}
-
-		reinit_completion(&adapter->init_done);
-		send_login(adapter);
-		if (!wait_for_completion_timeout(&adapter->init_done, timeout)) {
-			dev_err(dev, "Login timeout\n");
-			return -1;
-		}
-	}
+	rc = ibmvnic_login(netdev);
+	if (rc)
+		return rc;
 
 	rc = netif_set_real_num_tx_queues(netdev, adapter->req_tx_queues);
 	if (rc) {
