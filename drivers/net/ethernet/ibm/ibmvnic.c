@@ -3958,7 +3958,6 @@ static int ibmvnic_init(struct ibmvnic_adapter *adapter)
 
 static int ibmvnic_probe(struct vio_dev *dev, const struct vio_device_id *id)
 {
-	unsigned long timeout = msecs_to_jiffies(30000);
 	struct ibmvnic_adapter *adapter;
 	struct net_device *netdev;
 	unsigned char *mac_addr_p;
