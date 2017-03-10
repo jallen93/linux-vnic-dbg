@@ -1048,7 +1048,7 @@ struct ibmvnic_adapter {
 	__be64 tx_rx_desc_req;
 	u8 map_id;
 
-	struct work_struct vnic_crq_init;
+	struct work_struct ibmvnic_failover;
 	struct delayed_work ibmvnic_xport;
 	struct tasklet_struct tasklet;
 	bool failover;
