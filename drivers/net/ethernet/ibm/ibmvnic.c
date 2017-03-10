@@ -427,10 +427,13 @@ static int ibmvnic_open(struct net_device *netdev)
 	if (rc)
 		return rc;
 
-	rc = netif_set_real_num_tx_queues(netdev, adapter->req_tx_queues);
-	if (rc) {
-		dev_err(dev, "failed to set the number of tx queues\n");
-		return -1;
+	if (!adapter->failover) {
+		rc = netif_set_real_num_tx_queues(netdev,
+						  adapter->req_tx_queues);
+		if (rc) {
+			dev_err(dev, "failed to set the number of tx queues\n");
+			return -1;
+		}
 	}
 
 	rc = init_sub_crq_irqs(adapter);
@@ -612,7 +615,9 @@ static void ibmvnic_release_resources(struct ibmvnic_adapter *adapter)
 	adapter->rx_pool = NULL;
 
 	release_sub_crqs(adapter);
-	ibmvnic_release_crq_queue(adapter);
+
+	if (!adapter->failover)
+		ibmvnic_release_crq_queue(adapter);
 
 	if (adapter->debugfs_dir && !IS_ERR(adapter->debugfs_dir))
 		debugfs_remove_recursive(adapter->debugfs_dir);
@@ -641,8 +646,7 @@ static int ibmvnic_close(struct net_device *netdev)
 	for (i = 0; i < adapter->req_rx_queues; i++)
 		napi_disable(&adapter->napi[i]);
 
-	if (!adapter->failover)
-		netif_tx_stop_all_queues(netdev);
+	netif_tx_stop_all_queues(netdev);
 
 	memset(&crq, 0, sizeof(crq));
 	crq.logical_link_state.first = IBMVNIC_CRQ_CMD;
@@ -3453,7 +3457,7 @@ static void ibmvnic_handle_crq(union ibmvnic_crq *crq,
 			/* Send back a response */
 			rc = ibmvnic_send_crq_init_complete(adapter);
 			if (!rc)
-				schedule_work(&adapter->vnic_crq_init);
+				schedule_work(&adapter->ibmvnic_failover);
 			else
 				dev_err(dev, "Can't send initrsp rc=%ld\n", rc);
 			break;
@@ -3832,62 +3836,26 @@ static const struct file_operations ibmvnic_dump_ops = {
 	.release        = single_release,
 };
 
-static void handle_crq_init_rsp(struct work_struct *work)
+static void ibmvnic_handle_failover(struct work_struct *work)
 {
 	struct ibmvnic_adapter *adapter = container_of(work,
 						       struct ibmvnic_adapter,
-						       vnic_crq_init);
+						       ibmvnic_failover);
 	struct device *dev = &adapter->vdev->dev;
 	struct net_device *netdev = adapter->netdev;
-	unsigned long timeout = msecs_to_jiffies(30000);
-	bool restart = false;
 	int rc;
 
-	if (adapter->failover) {
-		release_sub_crqs(adapter);
-		if (netif_running(netdev)) {
-			netif_tx_disable(netdev);
-			ibmvnic_close(netdev);
-			restart = true;
-		}
-	}
+	dev_info(dev, "Handling failover, restarting driver\n");
+	ibmvnic_close(netdev);
 
-	reinit_completion(&adapter->init_done);
-	send_version_xchg(adapter);
-	if (!wait_for_completion_timeout(&adapter->init_done, timeout)) {
-		dev_err(dev, "Passive init timeout\n");
-		goto task_failed;
-	}
-
-	netdev->mtu = adapter->req_mtu - ETH_HLEN;
-
-	if (adapter->failover) {
-		adapter->failover = false;
-		if (restart) {
-			rc = ibmvnic_open(netdev);
-			if (rc)
-				goto restart_failed;
-		}
-		netif_carrier_on(netdev);
-		return;
-	}
-
-	rc = register_netdev(netdev);
+	rc = ibmvnic_open(netdev);
+	adapter->failover = false;
 	if (rc) {
-		dev_err(dev,
-			"failed to register netdev rc=%d\n", rc);
-		goto register_failed;
+		dev_err(dev, "Failed to restart ibmvnic, rc=%d\n", rc);
+		ibmvnic_close(netdev);
+	} else {
+		netif_carrier_on(netdev);
 	}
-	dev_info(dev, "ibmvnic registered\n");
-
-	return;
-
-restart_failed:
-	dev_err(dev, "Failed to restart ibmvnic, rc=%d\n", rc);
-register_failed:
-	release_sub_crqs(adapter);
-task_failed:
-	dev_err(dev, "Passive initialization was not successful\n");
 }
 
 static int ibmvnic_init(struct ibmvnic_adapter *adapter)
@@ -3898,10 +3866,12 @@ static int ibmvnic_init(struct ibmvnic_adapter *adapter)
 	char buf[17]; /* debugfs name buf */
 	int rc;
 
-	rc = ibmvnic_init_crq_queue(adapter);
-	if (rc) {
-		dev_err(dev, "Couldn't initialize crq. rc=%d\n", rc);
-		return rc;
+	if (!adapter->failover) {
+		rc = ibmvnic_init_crq_queue(adapter);
+		if (rc) {
+			dev_err(dev, "Couldn't initialize crq. rc=%d\n", rc);
+			return rc;
+		}
 	}
 
 	adapter->stats_token = dma_map_single(dev, &adapter->stats,
@@ -3932,7 +3902,12 @@ static int ibmvnic_init(struct ibmvnic_adapter *adapter)
 	}
 
 	init_completion(&adapter->init_done);
-	ibmvnic_send_crq_init(adapter);
+	if (adapter->failover) {
+		send_version_xchg(adapter);
+	} else {
+		ibmvnic_send_crq_init(adapter);
+	}
+
 	if (!wait_for_completion_timeout(&adapter->init_done, timeout)) {
 		dev_err(dev, "Initialization sequence timed out\n");
 		if (adapter->debugfs_dir && !IS_ERR(adapter->debugfs_dir))
@@ -3981,7 +3956,7 @@ static int ibmvnic_probe(struct vio_dev *dev, const struct vio_device_id *id)
 	netdev->ethtool_ops = &ibmvnic_ethtool_ops;
 	SET_NETDEV_DEV(netdev, &dev->dev);
 
-	INIT_WORK(&adapter->vnic_crq_init, handle_crq_init_rsp);
+	INIT_WORK(&adapter->ibmvnic_failover, ibmvnic_handle_failover);
 	INIT_DELAYED_WORK(&adapter->ibmvnic_xport, ibmvnic_xport_event);
 
 	spin_lock_init(&adapter->stats_lock);
