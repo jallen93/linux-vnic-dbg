@@ -427,13 +427,11 @@ static int ibmvnic_open(struct net_device *netdev)
 	if (rc)
 		return rc;
 
-	if (!adapter->failover) {
-		rc = netif_set_real_num_tx_queues(netdev,
-						  adapter->req_tx_queues);
-		if (rc) {
-			dev_err(dev, "failed to set the number of tx queues\n");
-			return -1;
-		}
+	rc = netif_set_real_num_tx_queues(netdev,
+					  adapter->req_tx_queues);
+	if (rc) {
+		dev_err(dev, "failed to set the number of tx queues\n");
+		return -1;
 	}
 
 	rc = init_sub_crq_irqs(adapter);
@@ -3446,7 +3444,9 @@ static void ibmvnic_xport_event(struct work_struct *work)
 		}
 		adapter->migrated = false;
 		if (restart) {
+			rtnl_lock();
 			rc = ibmvnic_open(adapter->netdev);
+			rtnl_unlock();
 			if (rc)
 				dev_err(dev, "Error logging in to Server rc=%ld\n",
 					rc);
@@ -3868,8 +3868,9 @@ static void ibmvnic_handle_failover(struct work_struct *work)
 
 	dev_info(dev, "Handling failover, restarting driver\n");
 	ibmvnic_close(netdev);
-
+	rtnl_lock();
 	rc = ibmvnic_open(netdev);
+	rtnl_unlock();
 	adapter->failover = false;
 	if (rc) {
 		dev_err(dev, "Failed to restart ibmvnic, rc=%d\n", rc);
