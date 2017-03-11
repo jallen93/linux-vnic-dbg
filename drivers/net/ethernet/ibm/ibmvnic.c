@@ -1018,18 +1018,29 @@ static int ibmvnic_change_mtu(struct net_device *netdev, int new_mtu)
 	return 0;
 }
 
-static void ibmvnic_tx_timeout(struct net_device *dev)
+static void __vnic_reset(struct ibmvnic_adapter *adapter)
 {
-	struct ibmvnic_adapter *adapter = netdev_priv(dev);
 	int rc;
 
-	/* Adapter timed out, resetting it */
+	adapter->needs_reset = false;
 	release_sub_crqs(adapter);
 	rc = ibmvnic_reset_crq(adapter);
 	if (rc)
-		dev_err(&adapter->vdev->dev, "Adapter timeout, reset failed\n");
+		dev_err(&adapter->vdev->dev, "Adapter error, reset failed\n");
 	else
 		ibmvnic_send_crq_init(adapter);
+}
+
+static void vnic_reset(struct ibmvnic_adapter *adapter)
+{
+	schedule_delayed_work(&adapter->ibmvnic_xport, 2 * HZ);
+}
+
+static void ibmvnic_tx_timeout(struct net_device *dev)
+{
+	struct ibmvnic_adapter *adapter = netdev_priv(dev);
+	adapter->needs_reset = 1;
+	schedule_delayed_work(&adapter->ibmvnic_xport, 2 * HZ);
 }
 
 static void remove_buff_from_pool(struct ibmvnic_adapter *adapter,
@@ -2306,7 +2317,7 @@ static void handle_error_info_rsp(union ibmvnic_crq *crq,
 	if (!crq->request_error_rsp.rc.code) {
 		dev_info(dev, "Request Error Rsp returned with rc=%x\n",
 			 crq->request_error_rsp.rc.code);
-		return;
+		goto out;
 	}
 
 	spin_lock_irqsave(&adapter->error_list_lock, flags);
@@ -2321,7 +2332,7 @@ static void handle_error_info_rsp(union ibmvnic_crq *crq,
 	if (!found) {
 		dev_err(dev, "Couldn't find error id %x\n",
 			be32_to_cpu(crq->request_error_rsp.error_id));
-		return;
+		goto out;
 	}
 
 	dev_err(dev, "Detailed info for error id %x:",
@@ -2334,10 +2345,13 @@ static void handle_error_info_rsp(union ibmvnic_crq *crq,
 	}
 	pr_cont("\n");
 
+out:
 	dma_unmap_single(dev, error_buff->dma, error_buff->len,
 			 DMA_FROM_DEVICE);
 	kfree(error_buff->buff);
 	kfree(error_buff);
+	if (adapter->needs_reset)
+		vnic_reset(adapter);
 }
 
 static void handle_dump_size_rsp(union ibmvnic_crq *crq,
@@ -2407,34 +2421,28 @@ static void handle_error_indication(union ibmvnic_crq *crq,
 		be32_to_cpu(crq->error_indication.error_id),
 		be16_to_cpu(crq->error_indication.error_cause));
 
+	if (crq->error_indication.flags & IBMVNIC_FATAL_ERROR)
+		adapter->needs_reset = true;
+
 	error_buff = kmalloc(sizeof(*error_buff), GFP_ATOMIC);
 	if (!error_buff)
-		return;
+		goto err;
 
 	error_buff->buff = kmalloc(detail_len, GFP_ATOMIC);
-	if (!error_buff->buff) {
-		kfree(error_buff);
-		return;
-	}
+	if (!error_buff->buff)
+		goto err;
 
 	error_buff->dma = dma_map_single(dev, error_buff->buff, detail_len,
 					 DMA_FROM_DEVICE);
 	if (dma_mapping_error(dev, error_buff->dma)) {
 		if (!firmware_has_feature(FW_FEATURE_CMO))
 			dev_err(dev, "Couldn't map error buffer\n");
-		kfree(error_buff->buff);
-		kfree(error_buff);
-		return;
+		goto err;
 	}
 
 	inflight_cmd = kmalloc(sizeof(*inflight_cmd), GFP_ATOMIC);
-	if (!inflight_cmd) {
-		dma_unmap_single(dev, error_buff->dma, detail_len,
-				 DMA_FROM_DEVICE);
-		kfree(error_buff->buff);
-		kfree(error_buff);
-		return;
-	}
+	if (!inflight_cmd)
+		goto unmap;
 
 	error_buff->len = detail_len;
 	error_buff->error_id = crq->error_indication.error_id;
@@ -2457,6 +2465,17 @@ static void handle_error_indication(union ibmvnic_crq *crq,
 	spin_unlock_irqrestore(&adapter->inflight_lock, flags);
 
 	ibmvnic_send_crq(adapter, &new_crq);
+	return;
+
+unmap:
+	dma_unmap_single(dev, error_buff->dma, detail_len,
+			 DMA_FROM_DEVICE);
+err:
+	if (error_buff)
+		kfree(error_buff->buff);
+	kfree(error_buff);
+	if (adapter->needs_reset)
+		vnic_reset(adapter);
 }
 
 static void handle_change_mac_rsp(union ibmvnic_crq *crq,
@@ -3444,6 +3463,8 @@ static void ibmvnic_xport_event(struct work_struct *work)
 					rc);
 		}
 		netif_carrier_on(adapter->netdev);
+	} else if (adapter->needs_reset) {
+		__vnic_reset(adapter);
 	} else {
 		release_sub_crqs(adapter);
 	}
