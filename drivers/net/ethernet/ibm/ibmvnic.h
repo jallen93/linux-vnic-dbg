@@ -1054,4 +1054,5 @@ struct ibmvnic_adapter {
 	bool failover;
 	bool is_up;
 	bool is_closed;
+	bool needs_reset;
 };
