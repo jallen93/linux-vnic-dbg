@@ -3457,12 +3457,12 @@ static void ibmvnic_xport_event(struct work_struct *work)
 			post_migr_cleanup(adapter);
 			restart = true;
 		}
-		release_sub_crqs(adapter);
 		rc = ibmvnic_reenable_crq_queue(adapter);
 		if (rc) {
 			dev_err(dev, "Error after enable rc=%ld\n", rc);
 			return;
 		}
+		release_sub_crqs(adapter);
 		reinit_completion(&adapter->init_done);
 		rc = ibmvnic_send_crq_init(adapter);
 		if (rc) {
