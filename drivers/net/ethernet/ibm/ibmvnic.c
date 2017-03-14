@@ -614,7 +614,7 @@ static void ibmvnic_release_resources(struct ibmvnic_adapter *adapter)
 
 	release_sub_crqs(adapter);
 
-	if (!adapter->failover && !adapter->needs_reset)
+	if (!adapter->failover)
 		ibmvnic_release_crq_queue(adapter);
 
 	if (adapter->debugfs_dir && !IS_ERR(adapter->debugfs_dir))
@@ -1003,48 +1003,30 @@ static int ibmvnic_set_mac(struct net_device *netdev, void *p)
 	/* netdev->dev_addr is changed in handle_change_mac_rsp function */
 	return 0;
 }
-static void __vnic_reset(struct work_struct *work)
- {
-	struct ibmvnic_adapter *adapter = container_of(work,
-						       struct ibmvnic_adapter,
-						       ibmvnic_reset);
-	struct net_device *netdev = adapter->netdev;
- 	int rc;
- 
-	netdev_info(netdev, "Resetting Device\n");
-	netif_carrier_off(netdev);
-	ibmvnic_close(netdev);
- 	release_sub_crqs(adapter);
- 	rc = ibmvnic_reset_crq(adapter);
-	if (rc) {
-		dev_err(&adapter->vdev->dev, "Adapter %s, reset failed\n",
-			adapter->error);
-	} else {
-		netdev_info(netdev, "Reset CRQ success\n");
-		rtnl_lock();
-		rc = ibmvnic_open(netdev);
-		rtnl_unlock();
-		if (rc) {
-			netdev_err(netdev, "Failed to restart ibmvnic, rc=%d\n",
-				   rc);
-			ibmvnic_close(netdev);
-		} else {
-			netif_carrier_on(netdev);
-		}
-	}
+
+static void __vnic_reset(struct ibmvnic_adapter *adapter)
+{
+	int rc;
+
 	adapter->needs_reset = false;
+	release_sub_crqs(adapter);
+	rc = ibmvnic_reset_crq(adapter);
+	if (rc)
+		dev_err(&adapter->vdev->dev, "Adapter error, reset failed\n");
+	else
+		ibmvnic_send_crq_init(adapter);
 }
 
 static void vnic_reset(struct ibmvnic_adapter *adapter)
 {
-	schedule_delayed_work(&adapter->ibmvnic_xport, 0);
+	schedule_delayed_work(&adapter->ibmvnic_xport, 2 * HZ);
 }
 
 static void ibmvnic_tx_timeout(struct net_device *dev)
 {
 	struct ibmvnic_adapter *adapter = netdev_priv(dev);
-	adapter->needs_reset = true;
-	schedule_delayed_work(&adapter->ibmvnic_xport, 0);
+	adapter->needs_reset = 1;
+	schedule_delayed_work(&adapter->ibmvnic_xport, 2 * HZ);
 }
 
 static void remove_buff_from_pool(struct ibmvnic_adapter *adapter,
@@ -3906,7 +3888,7 @@ static int ibmvnic_init(struct ibmvnic_adapter *adapter)
 	char buf[17]; /* debugfs name buf */
 	int rc;
 
-	if (!adapter->failover && !adapter->needs_reset) {
+	if (!adapter->failover) {
 		rc = ibmvnic_init_crq_queue(adapter);
 		if (rc) {
 			dev_err(dev, "Couldn't initialize crq. rc=%d\n", rc);
