@@ -3767,6 +3767,9 @@ static void ibmvnic_release_crq_queue(struct ibmvnic_adapter *adapter)
 	struct vio_dev *vdev = adapter->vdev;
 	long rc;
 
+	if (!crq->msgs)
+		return;
+
 	netdev_dbg(adapter->netdev, "Releasing CRQ\n");
 	free_irq(vdev->irq, adapter);
 	tasklet_kill(&adapter->tasklet);
@@ -3777,6 +3780,7 @@ static void ibmvnic_release_crq_queue(struct ibmvnic_adapter *adapter)
 	dma_unmap_single(&vdev->dev, crq->msg_token, PAGE_SIZE,
 			 DMA_BIDIRECTIONAL);
 	free_page((unsigned long)crq->msgs);
+	crq->msgs = NULL;
 }
 
 static int ibmvnic_init_crq_queue(struct ibmvnic_adapter *adapter)
@@ -3785,6 +3789,9 @@ static int ibmvnic_init_crq_queue(struct ibmvnic_adapter *adapter)
 	struct device *dev = &adapter->vdev->dev;
 	struct vio_dev *vdev = adapter->vdev;
 	int rc, retrc = -ENOMEM;
+
+	if (crq->msgs)
+		return 0;
 
 	crq->msgs = (union ibmvnic_crq *)get_zeroed_page(GFP_KERNEL);
 	/* Should we allocate more than one page? */
@@ -3847,6 +3854,7 @@ reg_crq_failed:
 	dma_unmap_single(dev, crq->msg_token, PAGE_SIZE, DMA_BIDIRECTIONAL);
 map_failed:
 	free_page((unsigned long)crq->msgs);
+	crq->msgs = NULL;
 	return retrc;
 }
 
@@ -3920,12 +3928,10 @@ static int ibmvnic_init(struct ibmvnic_adapter *adapter)
 	char buf[17]; /* debugfs name buf */
 	int rc;
 
-	if (!adapter->failover && !adapter->needs_reset) {
-		rc = ibmvnic_init_crq_queue(adapter);
-		if (rc) {
-			dev_err(dev, "Couldn't initialize crq. rc=%d\n", rc);
-			return rc;
-		}
+	rc = ibmvnic_init_crq_queue(adapter);
+	if (rc) {
+		dev_err(dev, "Couldn't initialize crq. rc=%d\n", rc);
+		return rc;
 	}
 
 	adapter->stats_token = dma_map_single(dev, &adapter->stats,
@@ -4043,9 +4049,11 @@ static int ibmvnic_probe(struct vio_dev *dev, const struct vio_device_id *id)
 static int ibmvnic_remove(struct vio_dev *dev)
 {
 	struct net_device *netdev = dev_get_drvdata(&dev->dev);
+	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
 
 	unregister_netdev(netdev);
 	free_netdev(netdev);
+	ibmvnic_release_crq_queue(adapter);
 	dev_set_drvdata(&dev->dev, NULL);
 
 	return 0;
