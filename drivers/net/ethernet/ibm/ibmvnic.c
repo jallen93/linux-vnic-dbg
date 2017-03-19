@@ -3434,7 +3434,8 @@ static int ibmvnic_remove(struct vio_dev *dev)
 
 	unregister_netdev(netdev);
 	free_netdev(netdev);
-	ibmvnic_release_crq_queue(adapter);
+
+	ibmvnic_release_resources(adapter);
 	dev_set_drvdata(&dev->dev, NULL);
 
 	return 0;
