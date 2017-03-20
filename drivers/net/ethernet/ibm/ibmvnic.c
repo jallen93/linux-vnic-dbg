@@ -2921,12 +2921,12 @@ static void ibmvnic_xport_event(struct work_struct *work)
 	bool restart;
 	long rc;
 
-	ibmvnic_free_inflight(adapter);
 	if (adapter->migrated) {
 		if (netif_running(adapter->netdev)) {
 			post_migr_cleanup(adapter);
 			restart = true;
 		}
+		ibmvnic_free_inflight(adapter);
 		rc = ibmvnic_reenable_crq_queue(adapter);
 		if (rc) {
 			dev_err(dev, "Error after enable rc=%ld\n", rc);
@@ -2956,6 +2956,7 @@ static void ibmvnic_xport_event(struct work_struct *work)
 	} else if (adapter->needs_reset) {
 		__vnic_reset(adapter);
 	} else {
+		ibmvnic_free_inflight(adapter);
 		ibmvnic_release_sub_crqs(adapter);
 	}
 }
