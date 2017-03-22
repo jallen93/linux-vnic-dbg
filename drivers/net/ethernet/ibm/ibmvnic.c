@@ -192,7 +192,7 @@ static void free_long_term_buff(struct ibmvnic_adapter *adapter,
 {
 	struct device *dev = &adapter->vdev->dev;
 
-	if (!ltb)
+	if (!ltb->buff)
 		return;
 
 	if (!adapter->failover && !adapter->migrated)
