@@ -2970,6 +2970,8 @@ static void ibmvnic_xport_event(struct work_struct *work)
 			if (rc)
 				dev_err(dev, "Error logging in to Server rc=%ld\n",
 					rc);
+				ibmvnic_close(adapter->netdev);
+				return;
 		}
 		netif_carrier_on(adapter->netdev);
 	} else if (adapter->needs_reset) {
