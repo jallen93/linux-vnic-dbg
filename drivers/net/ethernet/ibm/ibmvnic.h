@@ -935,7 +935,6 @@ struct ibmvnic_adapter {
 	dma_addr_t ip_offload_tok;
 	struct ibmvnic_control_ip_offload_buffer ip_offload_ctrl;
 	dma_addr_t ip_offload_ctrl_tok;
-	bool migrated;
 	u32 msg_enable;
 	void *bounce_buffer;
 	int bounce_buffer_size;
@@ -1026,10 +1025,10 @@ struct ibmvnic_adapter {
 	__be64 tx_rx_desc_req;
 	u8 map_id;
 
-	struct work_struct ibmvnic_failover;
-	struct delayed_work ibmvnic_xport;
+	struct work_struct ibmvnic_reset;
 	struct tasklet_struct tasklet;
 	bool failover;
+	bool migrated;
 	bool is_up;
 	bool is_closed;
 	bool needs_reset;
