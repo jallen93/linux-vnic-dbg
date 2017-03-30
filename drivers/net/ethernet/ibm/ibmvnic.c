@@ -1138,9 +1138,6 @@ static void __vnic_reset(struct work_struct *work)
 
 	netdev_info(netdev, "Resetting Device\n");
 	netif_carrier_off(netdev);
-	ibmvnic_close(netdev);
-	adapter->is_closed = false;
-	ibmvnic_release_resources(adapter);
 
 	if (adapter->migrated) {
 		rc = ibmvnic_reenable_crq_queue(adapter);
@@ -1150,13 +1147,16 @@ static void __vnic_reset(struct work_struct *work)
 		}
 	}
 
+	ibmvnic_close(netdev);
+	adapter->is_closed = false;
+	ibmvnic_release_resources(adapter);
 	ibmvnic_release_sub_crqs(adapter);
 	ibmvnic_release_crq_queue(adapter);
 	netdev_info(netdev, "Reset CRQ success\n");
-
 	rtnl_lock();
 	rc = ibmvnic_open(netdev);
 	rtnl_unlock();
+
 	if (rc) {
 		netdev_err(netdev, "Failed to restart ibmvnic, rc=%d\n",
 			   rc);
@@ -3096,6 +3096,7 @@ static void ibmvnic_handle_crq(union ibmvnic_crq *crq,
 			netif_carrier_off(netdev);
 			dev_info(dev, "Migrated: Re-enabling adapter\n");
 			adapter->is_up = false;
+			adapter->migrated = true;
 			vnic_reset(adapter);
 		} else if (gen_crq->cmd == IBMVNIC_DEVICE_FAILOVER) {
 			netif_carrier_off(netdev);
