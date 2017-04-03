@@ -1246,7 +1246,12 @@ static int ibmvnic_poll(struct napi_struct *napi, int budget)
 	struct net_device *netdev = napi->dev;
 	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
 	int scrq_num = (int)(napi - adapter->napi);
+	struct ibmvnic_rx_pool *pool;
 	int frames_processed = 0;
+	int cleaned_count;
+
+	pool = &adapter->rx_pool[scrq_num];
+	cleaned_count = pool->size - atomic_read(&pool->available);
 
 restart_poll:
 	while (frames_processed < budget) {
@@ -1256,6 +1261,12 @@ restart_poll:
 		u32 length;
 		u16 offset;
 		u8 flags = 0;
+
+		/* distribute RX buffer replenishment across the workload */
+		if (cleaned_count >= IBMVNIC_RX_WEIGHT) {
+			replenish_rx_pool(adapter, pool);
+			cleaned_count = 0;
+		}
 
 		if (!pending_scrq(adapter, adapter->rx_scrq[scrq_num]))
 			break;
@@ -1299,10 +1310,11 @@ restart_poll:
 		netdev->stats.rx_packets++;
 		netdev->stats.rx_bytes += length;
 		frames_processed++;
+		cleaned_count++;
 	}
-
+	/* clean once more in case any slipped through */
 	if (!adapter->closing)
-		replenish_rx_pool(adapter, &adapter->rx_pool[scrq_num]);
+		replenish_rx_pool(adapter, pool);
 
 	if (frames_processed < budget) {
 		enable_scrq_irq(adapter, adapter->rx_scrq[scrq_num]);
