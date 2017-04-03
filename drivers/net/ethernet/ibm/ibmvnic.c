@@ -598,6 +598,30 @@ static void ibmvnic_release_resources(struct ibmvnic_adapter *adapter)
 		}
 	}
 }
+static int ibmvnic_set_real_num_queues(struct net_device *netdev)
+{
+	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
+	int rc = 0;
+
+	rc = netif_set_real_num_tx_queues(netdev,
+					  adapter->req_tx_queues);
+	if (rc) {
+		netdev_err(netdev, "failed to set the number of tx queues\n");
+		return -1;
+	}
+
+	rc = netif_set_real_num_rx_queues(netdev,
+					  adapter->req_rx_queues);
+
+	if (rc) {
+		netdev_err(netdev, "failed to set the number of rx queues\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+
 
 static int ibmvnic_open(struct net_device *netdev)
 {
@@ -622,12 +646,10 @@ static int ibmvnic_open(struct net_device *netdev)
 			return rc;
 
 		dev_err(dev, "setting q number\n");
-		rc = netif_set_real_num_tx_queues(netdev,
-						  adapter->req_tx_queues);
-		if (rc) {
-			dev_err(dev, "failed to set the number of tx queues\n");
-			return -1;
-		}
+
+		rc = ibmvnic_set_real_num_queues(netdev);
+		if (rc)
+			return rc;
 
 		dev_err(dev, "init scrq irqs\n");
 		rc = init_sub_crq_irqs(adapter);
