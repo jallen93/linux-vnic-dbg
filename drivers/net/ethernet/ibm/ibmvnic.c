@@ -1148,6 +1148,12 @@ static void __vnic_reset(struct work_struct *work)
 	struct net_device *netdev = adapter->netdev;
 	int i, rc;
 
+	/* need to set the reset flag again if lock is held */
+	if (!mutex_trylock(&adapter->reset_lock)) {
+		mutex_lock(&adapter->reset_lock);
+		adapter->needs_reset = true;
+	}
+
 	netdev_info(netdev, "Resetting Device\n");
 	netif_carrier_off(netdev);
 
@@ -1155,7 +1161,7 @@ static void __vnic_reset(struct work_struct *work)
 		rc = ibmvnic_reenable_crq_queue(adapter);
 		if (rc) {
 			dev_err(&adapter->vdev->dev, "Adapter error, reset failed\n");
-			return;
+			goto out;
 		}
 	}
 
@@ -1173,6 +1179,7 @@ static void __vnic_reset(struct work_struct *work)
 		netdev_err(netdev, "Failed to restart ibmvnic, rc=%d\n",
 			   rc);
 		ibmvnic_close(netdev);
+		goto out;
 	} else {
 		netif_carrier_on(netdev);
 	}
@@ -1180,10 +1187,11 @@ static void __vnic_reset(struct work_struct *work)
 	/* kick napi */
 	for (i = 0; i < adapter->req_rx_queues; i++)
 		napi_schedule(&adapter->napi[i]);
-	
+out:
 	adapter->needs_reset = false;
 	adapter->failover = false;
 	adapter->migrated = false;
+	mutex_unlock(&adapter->reset_lock);
 }
 
 static void vnic_reset(struct ibmvnic_adapter *adapter)
@@ -3483,6 +3491,7 @@ static int ibmvnic_probe(struct vio_dev *dev, const struct vio_device_id *id)
 	INIT_WORK(&adapter->ibmvnic_reset, __vnic_reset);
 
 	spin_lock_init(&adapter->stats_lock);
+	mutex_init(&adapter->reset_lock);
 
 	INIT_LIST_HEAD(&adapter->errors);
 	INIT_LIST_HEAD(&adapter->inflight);
