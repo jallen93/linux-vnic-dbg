@@ -755,14 +755,29 @@ static int ibmvnic_close(struct net_device *netdev)
 {
 	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
 	unsigned long timeout = msecs_to_jiffies(30000);
+	struct ibmvnic_tx_pool *tx_pool;
 	union ibmvnic_crq crq;
-	int i;
+	int tx_scrqs;
+	int i, j;
 	//bool remaining;
 
 	adapter->closing = true;
 	netdev_err(netdev, "disable tx queue\n");
 	netif_tx_stop_all_queues(netdev);
-	
+
+	/* Free any remaining skbs in the tx buffer pools */
+	tx_scrqs = be32_to_cpu(adapter->login_rsp_buf->num_txsubm_subcrqs);
+	for (i = 0; i < tx_scrqs; i++) {
+		tx_pool = &adapter->tx_pool[i];
+		if (!tx_pool)
+			continue;
+
+		for (j = 0; j < adapter->req_tx_entries_per_subcrq; j++) {
+			if (tx_pool->tx_buff[j].skb)
+				dev_kfree_skb_any(tx_pool->tx_buff[j].skb);
+		}
+	}
+
 	if (adapter->tx_scrq) {
 		for (i = 0; i < adapter->req_tx_queues; i++)
 			if (adapter->tx_scrq[i])
@@ -1638,6 +1653,7 @@ static int ibmvnic_complete_tx(struct ibmvnic_adapter *adapter,
 	struct device *dev = &adapter->vdev->dev;
 	struct ibmvnic_tx_buff *txbuff;
 	union sub_crq *next;
+	struct sk_buff *skb;
 	int index;
 	int i, j;
 	u8 first;
@@ -1671,8 +1687,11 @@ restart_loop:
 						 DMA_TO_DEVICE);
 			}
 
-			if (txbuff->last_frag)
+			skb = txbuff->skb;
+			if (txbuff->last_frag) {
 				dev_kfree_skb_any(txbuff->skb);
+				txbuff->skb = NULL;
+			}
 
 			adapter->tx_pool[pool].free_map[adapter->tx_pool[pool].
 						     producer_index] = index;
@@ -1685,7 +1704,7 @@ restart_loop:
 
 		if (atomic_sub_return(next->tx_comp.num_comps, &scrq->used) <=
 		    (adapter->req_tx_entries_per_subcrq / 2) &&
-		    netif_subqueue_stopped(adapter->netdev, txbuff->skb)) {
+		    netif_subqueue_stopped(adapter->netdev, skb)) {
 			netif_wake_subqueue(adapter->netdev, scrq->pool_index);
 			netdev_info(adapter->netdev, "Started queue %d\n",
 				    scrq->pool_index);
