@@ -927,6 +927,15 @@ struct ibmvnic_inflight_cmd {
 	struct list_head list;
 };
 
+enum ibmvnic_reset_reason {VNIC_RESET_NONE, VNIC_RESET_FAILOVER,
+			   VNIC_RESET_MOBILITY, VNIC_RESET_FATAL,
+			   VNIC_RESET_TIMEOUT};
+
+struct ibmvnic_reset_work_item {
+	enum ibmvnic_reset_reason reset_reason;
+	struct list_head list;
+};
+
 struct ibmvnic_adapter {
 	struct vio_dev *vdev;
 	struct net_device *netdev;
@@ -1027,11 +1036,32 @@ struct ibmvnic_adapter {
 	__be64 tx_rx_desc_req;
 	u8 map_id;
 
-	struct work_struct ibmvnic_reset;
 	struct tasklet_struct tasklet;
-	bool failover;
-	bool migrated;
-	bool is_up;
-	bool is_closed;
-	bool needs_reset;
+	u32 status;
+#define VNIC_PROBING	0x00000001
+#define VNIC_OPENING	0x00000002
+#define VNIC_CLOSING	0x00000004
+#define VNIC_REMOVING	0x00000008
+#define VNIC_RESETTING	0x00000010
+
+#define VNIC_PROBED	0x00010000
+#define VNIC_OPEN	0x00020000
+#define VNIC_CLOSED	0x00040000
+#define VNIC_REMOVED	0x00080000
+
+	struct mutex reset_lock;
+	enum ibmvnic_reset_reason reset_reason;
+	struct work_struct ibmvnic_reset;
+	struct list_head reset_work_items;
 };
+
+static inline void clear_adapter_status(struct ibmvnic_adapter *adapter,
+					u32 status)
+{
+	adapter->status &= ~status;
+}
+
+static inline bool adapter_is_resetting(struct ibmvnic_adapter *adapter)
+{
+	return adapter->status & VNIC_RESETTING;
+}
