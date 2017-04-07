@@ -1025,7 +1025,6 @@ struct ibmvnic_adapter {
 	__be64 tx_rx_desc_req;
 	u8 map_id;
 
-	struct mutex reset_lock;
 	struct work_struct ibmvnic_reset;
 	struct tasklet_struct tasklet;
 	bool failover;
