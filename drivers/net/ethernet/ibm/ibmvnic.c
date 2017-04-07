@@ -2560,62 +2560,60 @@ out:
 			 DMA_FROM_DEVICE);
 	kfree(error_buff->buff);
 	kfree(error_buff);
-	if (adapter->needs_reset)
-		vnic_reset(adapter);
+	complete(&adapter->init_done);
 }
 
-static void handle_error_indication(union ibmvnic_crq *crq,
-				    struct ibmvnic_adapter *adapter)
+static void request_error_information(struct ibmvnic_adapter *adapter,
+				      union ibmvnic_crq *err_crq)
 {
-	int detail_len = be32_to_cpu(crq->error_indication.detail_error_sz);
-	struct ibmvnic_inflight_cmd *inflight_cmd;
 	struct device *dev = &adapter->vdev->dev;
+	struct ibmvnic_inflight_cmd *inflight_cmd;
 	struct ibmvnic_error_buff *error_buff;
-	union ibmvnic_crq new_crq;
+	unsigned long timeout = msecs_to_jiffies(30000);
+	union ibmvnic_crq crq;
 	unsigned long flags;
-
-	dev_err(dev, "Firmware reports %serror id %x, cause %d\n",
-		crq->error_indication.
-		    flags & IBMVNIC_FATAL_ERROR ? "FATAL " : "",
-		be32_to_cpu(crq->error_indication.error_id),
-		be16_to_cpu(crq->error_indication.error_cause));
-
-	if (crq->error_indication.flags & IBMVNIC_FATAL_ERROR)
-		adapter->needs_reset = true;
+	int rc, detail_len;
 
 	error_buff = kmalloc(sizeof(*error_buff), GFP_ATOMIC);
 	if (!error_buff)
-		goto err;
+		return;
 
+	detail_len = be32_to_cpu(err_crq->error_indication.detail_error_sz);
 	error_buff->buff = kmalloc(detail_len, GFP_ATOMIC);
-	if (!error_buff->buff)
-		goto err;
+	if (!error_buff->buff) {
+		kfree(error_buff);
+		return;
+	}
 
 	error_buff->dma = dma_map_single(dev, error_buff->buff, detail_len,
 					 DMA_FROM_DEVICE);
 	if (dma_mapping_error(dev, error_buff->dma)) {
-		if (!firmware_has_feature(FW_FEATURE_CMO))
-			dev_err(dev, "Couldn't map error buffer\n");
-		goto err;
+		dev_err(dev, "Couldn't map error buffer\n");
+		kfree(error_buff->buff);
+		kfree(error_buff);
+		return;
 	}
 
 	inflight_cmd = kmalloc(sizeof(*inflight_cmd), GFP_ATOMIC);
-	if (!inflight_cmd)
-		goto unmap;
+	if (!inflight_cmd) {
+		kfree(error_buff->buff);
+		kfree(error_buff);
+		return;
+	}
 
 	error_buff->len = detail_len;
-	error_buff->error_id = crq->error_indication.error_id;
+	error_buff->error_id = be32_to_cpu(err_crq->error_indication.error_id);
 
 	spin_lock_irqsave(&adapter->error_list_lock, flags);
 	list_add_tail(&error_buff->list, &adapter->errors);
 	spin_unlock_irqrestore(&adapter->error_list_lock, flags);
 
-	memset(&new_crq, 0, sizeof(new_crq));
-	new_crq.request_error_info.first = IBMVNIC_CRQ_CMD;
-	new_crq.request_error_info.cmd = REQUEST_ERROR_INFO;
-	new_crq.request_error_info.ioba = cpu_to_be32(error_buff->dma);
-	new_crq.request_error_info.len = cpu_to_be32(detail_len);
-	new_crq.request_error_info.error_id = crq->error_indication.error_id;
+	memset(&crq, 0, sizeof(crq));
+	crq.request_error_info.first = IBMVNIC_CRQ_CMD;
+	crq.request_error_info.cmd = REQUEST_ERROR_INFO;
+	crq.request_error_info.ioba = cpu_to_be32(error_buff->dma);
+	crq.request_error_info.len = cpu_to_be32(detail_len);
+	crq.request_error_info.error_id = err_crq->error_indication.error_id;
 
 	memcpy(&inflight_cmd->crq, &crq, sizeof(crq));
 
@@ -2623,17 +2621,36 @@ static void handle_error_indication(union ibmvnic_crq *crq,
 	list_add_tail(&inflight_cmd->list, &adapter->inflight);
 	spin_unlock_irqrestore(&adapter->inflight_lock, flags);
 
-	ibmvnic_send_crq(adapter, &new_crq);
-	return;
+	reinit_completion(&adapter->init_done);
+	rc = ibmvnic_send_crq(adapter, &crq);
+	if (rc) {
+		dev_err(dev, "Error sending init rc=%d\n", rc);
+		return;
+	}
 
-unmap:
-	dma_unmap_single(dev, error_buff->dma, detail_len,
-			 DMA_FROM_DEVICE);
-err:
-	if (error_buff)
-		kfree(error_buff->buff);
-	kfree(error_buff);
-	if (adapter->needs_reset)
+	if (!wait_for_completion_timeout(&adapter->init_done, timeout)) {
+		dev_err(dev, "Timeout during post-migration init\n");
+		return;
+	}
+
+	return;
+}
+
+static void handle_error_indication(union ibmvnic_crq *crq,
+				    struct ibmvnic_adapter *adapter)
+{
+	struct device *dev = &adapter->vdev->dev;
+
+	dev_err(dev, "Firmware reports %serror id %x, cause %d\n",
+		crq->error_indication.flags
+				& IBMVNIC_FATAL_ERROR ? "FATAL " : "",
+		be32_to_cpu(crq->error_indication.error_id),
+		be16_to_cpu(crq->error_indication.error_cause));
+
+	if (be32_to_cpu(crq->error_indication.error_id))
+		request_error_information(adapter, crq);
+
+	if (crq->error_indication.flags & IBMVNIC_FATAL_ERROR)
 		vnic_reset(adapter);
 }
 
