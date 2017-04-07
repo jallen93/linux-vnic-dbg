@@ -295,9 +295,6 @@ static void replenish_pools(struct ibmvnic_adapter *adapter)
 {
 	int i;
 
-	if (adapter->needs_reset)
-		return;
-
 	adapter->replenish_task_cycles++;
 	for (i = 0; i < be32_to_cpu(adapter->login_rsp_buf->num_rxadd_subcrqs);
 	     i++) {
