@@ -1283,10 +1283,10 @@ static void __vnic_reset(struct work_struct *work)
 	if (!(reset_status & VNIC_CLOSED)) {
 		netdev_err(netdev, "closing from reset\n");
 		__ibmvnic_close(netdev);
-		/* remove the closed state so that the open starts as if coming
-		 * from probe */
-		set_adapter_status(adapter, VNIC_PROBED);
 	}
+
+	/* remove the closed state so that the open starts as if coming from probe */
+	set_adapter_status(adapter, VNIC_PROBED);
 
 	ibmvnic_release_resources(adapter);
 	ibmvnic_release_sub_crqs(adapter);
