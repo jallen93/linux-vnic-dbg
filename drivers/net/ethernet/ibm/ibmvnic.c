@@ -1069,9 +1069,12 @@ static int ibmvnic_xmit(struct sk_buff *skb, struct net_device *netdev)
 	int ret = 0;
 
 	if (adapter_is_resetting(adapter)) {
+		dev_kfree_skb_any(skb);
 		tx_send_failed++;
 		tx_dropped++;
-		ret = NETDEV_TX_BUSY;
+		if (!netif_subqueue_stopped(netdev, skb))
+			netif_stop_subqueue(netdev, queue_num);
+		ret = NETDEV_TX_OK;
 		goto out;
 	}
 
@@ -1145,11 +1148,12 @@ static int ibmvnic_xmit(struct sk_buff *skb, struct net_device *netdev)
 						    sizeof(tx_buff->indir_arr),
 						    DMA_TO_DEVICE);
 		if (dma_mapping_error(dev, tx_buff->indir_dma)) {
+			dev_kfree_skb_any(skb);
 			if (!firmware_has_feature(FW_FEATURE_CMO))
 				dev_err(dev, "tx: unable to map descriptor array\n");
 			tx_map_failed++;
 			tx_dropped++;
-			ret = NETDEV_TX_BUSY;
+			ret = NETDEV_TX_OK;
 			goto out;
 		}
 		lpar_rc = send_subcrq_indirect(adapter, handle_array[queue_num],
@@ -1167,10 +1171,12 @@ static int ibmvnic_xmit(struct sk_buff *skb, struct net_device *netdev)
 				adapter->req_tx_entries_per_subcrq - 1;
 		else
 			tx_pool->consumer_index--;
-
+		dev_kfree_skb_any(skb);
 		tx_send_failed++;
 		tx_dropped++;
-		ret = NETDEV_TX_BUSY;
+		if (lpar_rc == H_CLOSED)
+			netif_stop_subqueue(netdev, queue_num);
+		ret = NETDEV_TX_OK;
 		goto out;
 	}
 
