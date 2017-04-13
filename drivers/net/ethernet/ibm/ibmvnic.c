@@ -637,6 +637,75 @@ static void ibmvnic_release_resources(struct ibmvnic_adapter *adapter)
 	}
 }
 
+static int ibmvnic_set_real_num_queues(struct net_device *netdev)
+{
+	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
+	int rc = 0;
+
+	rc = netif_set_real_num_tx_queues(netdev,
+					  adapter->req_tx_queues);
+	if (rc) {
+		netdev_err(netdev, "failed to set the number of tx queues\n");
+		return -1;
+	}
+
+	rc = netif_set_real_num_rx_queues(netdev,
+					  adapter->req_rx_queues);
+
+	if (rc) {
+		netdev_err(netdev, "failed to set the number of rx queues\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int init_resources(struct ibmvnic_adapter *adapter)
+{
+	struct net_device *netdev = adapter->netdev;
+	int i, rc;
+
+	netdev_err(netdev, "setting q number\n");
+	rc = ibmvnic_set_real_num_queues(netdev);
+	if (rc)
+		return rc;
+
+	netdev_err(netdev, "init scrq irqs\n");
+	rc = init_sub_crq_irqs(adapter);
+	if (rc)
+		return rc;
+
+	netdev_err(netdev, "creating napi's\n");
+	adapter->map_id = 1;
+	adapter->napi = kcalloc(adapter->req_rx_queues,
+				sizeof(struct napi_struct), GFP_KERNEL);
+	if (!adapter->napi)
+		return -ENOMEM;
+	
+	netdev_err(netdev, "adding napi's\n");
+	for (i = 0; i < adapter->req_rx_queues; i++)
+		netif_napi_add(netdev, &adapter->napi[i], ibmvnic_poll,
+			       NAPI_POLL_WEIGHT);
+
+	netdev_err(netdev, "map query\n");
+	send_map_query(adapter);
+
+	netdev_err(netdev, "init rx pools\n");
+	rc = ibmvnic_init_rx_pools(netdev);
+	if (rc)
+		return rc;
+
+	netdev_err(netdev, "init tx pools\n");
+	rc = ibmvnic_init_tx_pools(netdev);
+	if (rc)
+		return rc;
+
+	netdev_err(netdev, "init bb\n");
+	rc = ibmvnic_init_bounce_buffer(netdev);
+	
+	return rc;
+}
+
 static void set_link_state(struct ibmvnic_adapter *adapter, u8 link_state)
 {
 	struct net_device *netdev = adapter->netdev;
@@ -669,29 +738,6 @@ static void set_link_state(struct ibmvnic_adapter *adapter, u8 link_state)
 	} while (resend);
 }
 
-static int ibmvnic_set_real_num_queues(struct net_device *netdev)
-{
-	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
-	int rc = 0;
-
-	rc = netif_set_real_num_tx_queues(netdev,
-					  adapter->req_tx_queues);
-	if (rc) {
-		netdev_err(netdev, "failed to set the number of tx queues\n");
-		return -1;
-	}
-
-	rc = netif_set_real_num_rx_queues(netdev,
-					  adapter->req_rx_queues);
-
-	if (rc) {
-		netdev_err(netdev, "failed to set the number of rx queues\n");
-		return -1;
-	}
-
-	return 0;
-}
-
 static int __ibmvnic_open(struct net_device *netdev)
 {
 	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
@@ -718,50 +764,13 @@ static int __ibmvnic_open(struct net_device *netdev)
 			return rc;
 		}
 
-		dev_err(dev, "setting q number\n");
-
-		rc = ibmvnic_set_real_num_queues(netdev);
+		rc = init_resources(adapter);
 		if (rc) {
+			dev_err(dev, "failed to initialize resources\n");
+			ibmvnic_release_resources(adapter);
 			clear_adapter_status(adapter, VNIC_OPENING);
 			return rc;
 		}
-
-		dev_err(dev, "init scrq irqs\n");
-		rc = init_sub_crq_irqs(adapter);
-		if (rc) {
-			dev_err(dev, "failed to initialize sub crq irqs\n");
-			clear_adapter_status(adapter, VNIC_OPENING);
-			return -1;
-		}
-
-		dev_err(dev, "creating napi's\n");
-		adapter->map_id = 1;
-		adapter->napi = kcalloc(adapter->req_rx_queues,
-					sizeof(struct napi_struct), GFP_KERNEL);
-		if (!adapter->napi)
-			goto ibmvnic_open_fail;
-		dev_err(dev, "adding napi's\n");
-		for (i = 0; i < adapter->req_rx_queues; i++)
-			netif_napi_add(netdev, &adapter->napi[i], ibmvnic_poll,
-				       NAPI_POLL_WEIGHT);
-
-		dev_err(dev, "map query\n");
-		send_map_query(adapter);
-
-		dev_err(dev, "init rx pools\n");
-		rc = ibmvnic_init_rx_pools(netdev);
-		if (rc)
-			goto ibmvnic_open_fail;
-
-		dev_err(dev, "init tx pools\n");
-		rc = ibmvnic_init_tx_pools(netdev);
-		if (rc)
-			goto ibmvnic_open_fail;
-
-		dev_err(dev, "init bb\n");
-		rc = ibmvnic_init_bounce_buffer(netdev);
-		if (rc)
-			goto ibmvnic_open_fail;
 	}
 
 	dev_err(dev, "replenish pools\n");
@@ -797,14 +806,6 @@ static int __ibmvnic_open(struct net_device *netdev)
 
 	set_adapter_status(adapter, VNIC_OPEN);
 	return 0;
-
-ibmvnic_open_fail:
-	for (i = 0; i < adapter->req_rx_queues; i++)
-		napi_disable(&adapter->napi[i]);
-
-	ibmvnic_release_resources(adapter);
-	clear_adapter_status(adapter, VNIC_OPENING);
-	return -ENOMEM;
 }
 
 static int ibmvnic_open(struct net_device *netdev)
