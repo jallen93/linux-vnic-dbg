@@ -3639,6 +3639,7 @@ static int ibmvnic_init(struct ibmvnic_adapter *adapter)
 
 	if (!wait_for_completion_timeout(&adapter->init_done, timeout)) {
 		dev_err(dev, "Initialization sequence timed out\n");
+		ibmvnic_release_stats_token(adapter);
 		ibmvnic_release_crq_queue(adapter);
 		return -1;
 	}
