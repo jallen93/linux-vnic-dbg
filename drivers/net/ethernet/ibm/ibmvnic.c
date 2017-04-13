@@ -843,26 +843,26 @@ static int __ibmvnic_close(struct net_device *netdev)
 	struct ibmvnic_tx_pool *tx_pool;
 	int tx_scrqs;
 	int i, j;
-	//bool remaining;
 
 	set_adapter_status(adapter, VNIC_CLOSING);
 	netdev_err(netdev, "disable tx queue\n");
 	netif_tx_stop_all_queues(netdev);
 
-	/* Free any remaining skbs in the tx buffer pools */
 	tx_scrqs = be32_to_cpu(adapter->login_rsp_buf->num_txsubm_subcrqs);
-	for (i = 0; i < tx_scrqs; i++) {
-		tx_pool = &adapter->tx_pool[i];
-		if (!tx_pool)
-			continue;
-
-		for (j = 0; j < adapter->req_tx_entries_per_subcrq; j++) {
-			if (tx_pool->tx_buff[j].skb)
-				dev_kfree_skb_any(tx_pool->tx_buff[j].skb);
-		}
-	}
-
 	if (adapter->tx_scrq) {
+		u64 tx_entries = adapter->req_tx_entries_per_subcrq;
+		/* Free any remaining skbs in the tx buffer pools */
+		for (i = 0; i < tx_scrqs; i++) {
+			tx_pool = &adapter->tx_pool[i];
+			if (!tx_pool)
+				continue;
+
+			for (j = 0; j < tx_entries; j++) {
+				if (tx_pool->tx_buff[j].skb)
+					dev_kfree_skb_any(tx_pool->tx_buff[j].skb);
+			}
+		}
+
 		for (i = 0; i < adapter->req_tx_queues; i++)
 			if (adapter->tx_scrq[i])
 				disable_irq(adapter->tx_scrq[i]->irq);
@@ -870,24 +870,27 @@ static int __ibmvnic_close(struct net_device *netdev)
 
 	set_link_state(adapter, IBMVNIC_LOGICAL_LNK_DN);
 
-	for (i = 0; i < adapter->req_rx_queues; i++) {
-		netdev_err(netdev, "Looking at queue %d\n", i);
+	if (adapter->rx_scrq) {
+		for (i = 0; i < adapter->req_rx_queues; i++) {
+			netdev_err(netdev, "Looking at queue %d\n", i);
 		
-		while (pending_scrq(adapter, adapter->rx_scrq[i]))
-			mdelay(100);
+			while (pending_scrq(adapter, adapter->rx_scrq[i]))
+				mdelay(100);
+		}
+
+		netdev_err(netdev, "disabling scrqs\n");
+			for (i = 0; i < adapter->req_rx_queues; i++)
+				if (adapter->rx_scrq[i])
+					disable_irq(adapter->rx_scrq[i]->irq);
 	}
 
-	netdev_err(netdev, "disabling scrqs\n");
-	if (adapter->rx_scrq) {
-		for (i = 0; i < adapter->req_rx_queues; i++)
-			if (adapter->rx_scrq[i])
-				disable_irq(adapter->rx_scrq[i]->irq);
-	}
 	disable_sub_crqs(adapter);
 
-	netdev_err(netdev, "napi disable rx queue\n");
-	for (i = 0; i < adapter->req_rx_queues; i++)
-		napi_disable(&adapter->napi[i]);
+	if (adapter->napi) {
+		netdev_err(netdev, "napi disable rx queue\n");
+		for (i = 0; i < adapter->req_rx_queues; i++)
+			napi_disable(&adapter->napi[i]);
+	}
 
 	set_adapter_status(adapter, VNIC_CLOSED);
 	return 0;
