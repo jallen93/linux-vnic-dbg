@@ -742,36 +742,10 @@ static int __ibmvnic_open(struct net_device *netdev)
 {
 	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
 	struct device *dev = &adapter->vdev->dev;
-	int rc = 0;
 	int i;
 
 	dev_err(dev, "In Open\n");
 	set_adapter_status(adapter, VNIC_OPENING);
-	if (!(adapter->status & VNIC_CLOSED)) {
-		if (adapter_is_resetting(adapter)) {
-			dev_err(dev, "calling init\n");
-			rc = ibmvnic_init(adapter);
-			if (rc) {
-				clear_adapter_status(adapter, VNIC_OPENING);
-				return rc;
-			}
-		}
-
-		dev_err(dev, "logging in\n");
-		rc = ibmvnic_login(netdev);
-		if (rc) {
-			clear_adapter_status(adapter, VNIC_OPENING);
-			return rc;
-		}
-
-		rc = init_resources(adapter);
-		if (rc) {
-			dev_err(dev, "failed to initialize resources\n");
-			ibmvnic_release_resources(adapter);
-			clear_adapter_status(adapter, VNIC_OPENING);
-			return rc;
-		}
-	}
 
 	dev_err(dev, "replenish pools\n");
 	replenish_pools(adapter);
@@ -814,6 +788,26 @@ static int ibmvnic_open(struct net_device *netdev)
 	int rc;
 
 	mutex_lock(&adapter->reset_lock);
+
+	if (!(adapter->status & VNIC_CLOSED)) {
+		netdev_err(netdev, "logging in\n");
+		rc = ibmvnic_login(netdev);
+		if (rc) {
+			clear_adapter_status(adapter, VNIC_OPENING);
+			mutex_unlock(&adapter->reset_lock);
+			return rc;
+		}
+
+		rc = init_resources(adapter);
+		if (rc) {
+			netdev_err(netdev, "failed to initialize resources\n");
+			ibmvnic_release_resources(adapter);
+			clear_adapter_status(adapter, VNIC_OPENING);
+			mutex_unlock(&adapter->reset_lock);
+			return rc;
+		}
+	}
+
 	rc = __ibmvnic_open(netdev);
 	mutex_unlock(&adapter->reset_lock);
 
@@ -1315,13 +1309,46 @@ static void __vnic_reset(struct work_struct *work)
 
 	if (reset_status & VNIC_OPEN) {
 		netdev_err(netdev, "opening from reset\n");
+		netdev_err(netdev, "calling init\n");
+		rc = ibmvnic_init(adapter);
+		if (rc) {
+			clear_adapter_status(adapter, VNIC_OPENING);
+			goto reset_out;
+		}
+
+		netdev_err(netdev, "logging in\n");
+		rc = ibmvnic_login(netdev);
+		if (rc) {
+			clear_adapter_status(adapter, VNIC_OPENING);
+			goto reset_out;
+		}
+
+		rc = init_resources(adapter);
+		if (rc) {
+			netdev_err(netdev, "failed to initialize resources\n");
+			list_for_each(entry, &adapter->reset_work_items) {
+				rwi = list_entry(entry,
+						 struct ibmvnic_reset_work_item,
+						 list);
+				list_del(entry);
+				kfree(rwi);
+			}
+
+			ibmvnic_remove(adapter->vdev);
+			goto reset_out;
+		}
+
 		rtnl_lock();
 		rc = __ibmvnic_open(netdev);
 		rtnl_unlock();
 		if (rc) {
 			netdev_err(netdev, "Failed to restart ibmvnic, rc=%d\n",
 				   rc);
-			__ibmvnic_close(netdev);
+			if (list_empty(&adapter->reset_work_items))
+				set_adapter_status(adapter, VNIC_CLOSED);
+			else
+				adapter->status = reset_status;
+
 			goto reset_out;
 		} else {
 			netif_carrier_on(netdev);
