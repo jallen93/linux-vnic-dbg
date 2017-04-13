@@ -1153,6 +1153,7 @@ static int ibmvnic_xmit(struct sk_buff *skb, struct net_device *netdev)
 				dev_err(dev, "tx: unable to map descriptor array\n");
 			tx_map_failed++;
 			tx_dropped++;
+			tx_buff->skb = NULL;
 			ret = NETDEV_TX_OK;
 			goto out;
 		}
@@ -1176,6 +1177,7 @@ static int ibmvnic_xmit(struct sk_buff *skb, struct net_device *netdev)
 		tx_dropped++;
 		if (lpar_rc == H_CLOSED)
 			netif_stop_subqueue(netdev, queue_num);
+		tx_buff->skb = NULL;
 		ret = NETDEV_TX_OK;
 		goto out;
 	}
