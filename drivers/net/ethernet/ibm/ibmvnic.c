@@ -706,11 +706,12 @@ static int init_resources(struct ibmvnic_adapter *adapter)
 	return rc;
 }
 
-static void set_link_state(struct ibmvnic_adapter *adapter, u8 link_state)
+static int set_link_state(struct ibmvnic_adapter *adapter, u8 link_state)
 {
 	struct net_device *netdev = adapter->netdev;
 	union ibmvnic_crq crq;
 	bool resend;
+	int rc;
 	
 	netdev_err(netdev, "setting link state %d\n", link_state);
 	memset(&crq, 0, sizeof(crq));
@@ -722,7 +723,12 @@ static void set_link_state(struct ibmvnic_adapter *adapter, u8 link_state)
 		resend = false;
 
 		reinit_completion(&adapter->init_done);
-		ibmvnic_send_crq(adapter, &crq);
+		rc = ibmvnic_send_crq(adapter, &crq);
+		if (rc) {
+			netdev_err(netdev, "Failed to set link state\n");
+			break;
+		}
+			
 		wait_for_completion(&adapter->init_done);
 
 		if (adapter->init_done_rc == 1) {
@@ -731,6 +737,8 @@ static void set_link_state(struct ibmvnic_adapter *adapter, u8 link_state)
 			resend = true;
 		}
 	} while (resend);
+
+	return rc;
 }
 
 static int __ibmvnic_open(struct net_device *netdev)
@@ -833,6 +841,7 @@ static int __ibmvnic_close(struct net_device *netdev)
 	struct ibmvnic_tx_pool *tx_pool;
 	int tx_scrqs;
 	int i, j;
+	int rc = 0;
 
 	set_adapter_status(adapter, VNIC_CLOSING);
 	netdev_err(netdev, "disable tx queue\n");
@@ -858,8 +867,12 @@ static int __ibmvnic_close(struct net_device *netdev)
 				disable_irq(adapter->tx_scrq[i]->irq);
 	}
 
-	if (adapter->logical_link_state != IBMVNIC_LOGICAL_LNK_DN)
-		set_link_state(adapter, IBMVNIC_LOGICAL_LNK_DN);
+	if (adapter->logical_link_state != IBMVNIC_LOGICAL_LNK_DN) {
+		rc = set_link_state(adapter, IBMVNIC_LOGICAL_LNK_DN);
+		if (rc)
+			netdev_err(netdev, "Failure setting link state down, bail\n");
+	}
+			
 
 	if (adapter->rx_scrq) {
 		for (i = 0; i < adapter->req_rx_queues; i++) {
@@ -884,7 +897,7 @@ static int __ibmvnic_close(struct net_device *netdev)
 	}
 
 	set_adapter_status(adapter, VNIC_CLOSED);
-	return 0;
+	return rc;
 }
 
 static int ibmvnic_close(struct net_device *netdev)
@@ -1511,7 +1524,7 @@ restart_poll:
 	}
 	/* clean once more in case any slipped through */
 	if (!(adapter->status & VNIC_CLOSING))
-		replenish_rx_pool(adapter, &adapter->rx_ppol[scrq_num]);
+		replenish_rx_pool(adapter, &adapter->rx_pool[scrq_num]);
 
 	if (frames_processed < budget) {
 		enable_scrq_irq(adapter, adapter->rx_scrq[scrq_num]);
