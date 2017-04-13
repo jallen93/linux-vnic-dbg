@@ -1323,14 +1323,23 @@ reset_out:
 static void vnic_reset(struct ibmvnic_adapter *adapter,
 		       enum ibmvnic_reset_reason reason)
 {
-	struct ibmvnic_reset_work_item *rwi;
+	struct ibmvnic_reset_work_item *rwi, *tmp;
 	struct net_device *netdev = adapter->netdev;
+	struct list_head *entry;
 
 	netdev_err(netdev, "Checking reset status\n");
 	if (adapter->status & (VNIC_REMOVING | VNIC_REMOVED)) {
 		netdev_err(netdev, "Skipping reset %x\n",
 			   adapter->status);
 		return;
+	}
+
+	list_for_each(entry, &adapter->reset_work_items) {
+		tmp = list_entry(entry, struct ibmvnic_reset_work_item, list);
+		if (tmp->reset_reason == reason) {
+			netdev_err(netdev, "Matching reset found, skipping\n");
+			return;
+		}
 	}
 
 	netdev_err(netdev, "Alloc reset work\n");
