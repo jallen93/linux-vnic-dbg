@@ -1072,8 +1072,6 @@ static int ibmvnic_xmit(struct sk_buff *skb, struct net_device *netdev)
 		dev_kfree_skb_any(skb);
 		tx_send_failed++;
 		tx_dropped++;
-		if (!netif_subqueue_stopped(netdev, skb))
-			netif_stop_subqueue(netdev, queue_num);
 		ret = NETDEV_TX_OK;
 		goto out;
 	}
@@ -1175,8 +1173,6 @@ static int ibmvnic_xmit(struct sk_buff *skb, struct net_device *netdev)
 		dev_kfree_skb_any(skb);
 		tx_send_failed++;
 		tx_dropped++;
-		if (lpar_rc == H_CLOSED)
-			netif_stop_subqueue(netdev, queue_num);
 		tx_buff->skb = NULL;
 		ret = NETDEV_TX_OK;
 		goto out;
