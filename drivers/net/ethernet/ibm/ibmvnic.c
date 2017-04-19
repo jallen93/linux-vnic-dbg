@@ -1686,12 +1686,12 @@ static struct ibmvnic_sub_crq_queue *init_sub_crq_queue(struct ibmvnic_adapter
 	struct ibmvnic_sub_crq_queue *scrq;
 	int rc;
 
-	scrq = kzalloc(sizeof(*scrq), GFP_ATOMIC);
+	scrq = kzalloc(sizeof(*scrq), GFP_KERNEL);
 	if (!scrq)
 		return NULL;
 
 	scrq->msgs =
-		(union sub_crq *)__get_free_pages(GFP_ATOMIC | __GFP_ZERO, 2);
+		(union sub_crq *)__get_free_pages(GFP_KERNEL | __GFP_ZERO, 2);
 	if (!scrq->msgs) {
 		dev_warn(dev, "Couldn't allocate crq queue messages page\n");
 		goto zero_page_failed;
@@ -1981,7 +1981,7 @@ static int ibmvnic_init_sub_crqs(struct ibmvnic_adapter *adapter)
 
 	total_queues = adapter->req_tx_queues + adapter->req_rx_queues;
 
-	allqueues = kcalloc(total_queues, sizeof(*allqueues), GFP_ATOMIC);
+	allqueues = kcalloc(total_queues, sizeof(*allqueues), GFP_KERNEL);
 	if (!allqueues)
 		return -1;
 
@@ -2021,7 +2021,7 @@ static int ibmvnic_init_sub_crqs(struct ibmvnic_adapter *adapter)
 	}
 
 	adapter->tx_scrq = kcalloc(adapter->req_tx_queues,
-				   sizeof(*adapter->tx_scrq), GFP_ATOMIC);
+				   sizeof(*adapter->tx_scrq), GFP_KERNEL);
 	if (!adapter->tx_scrq)
 		goto tx_failed;
 
@@ -2031,7 +2031,7 @@ static int ibmvnic_init_sub_crqs(struct ibmvnic_adapter *adapter)
 	}
 
 	adapter->rx_scrq = kcalloc(adapter->req_rx_queues,
-				   sizeof(*adapter->rx_scrq), GFP_ATOMIC);
+				   sizeof(*adapter->rx_scrq), GFP_KERNEL);
 	if (!adapter->rx_scrq)
 		goto rx_failed;
 
@@ -2057,7 +2057,6 @@ static void ibmvnic_send_req_caps(struct ibmvnic_adapter *adapter, int retry)
 {
 	struct device *dev = &adapter->vdev->dev;
 	union ibmvnic_crq crq;
-	int rc;
 
 	if (!retry) {
 		/* Sub-CRQ entries are 32 byte long */
@@ -2085,10 +2084,6 @@ static void ibmvnic_send_req_caps(struct ibmvnic_adapter *adapter, int retry)
 
 		adapter->req_mtu = adapter->netdev->mtu + ETH_HLEN;
 	}
-
-	rc = ibmvnic_init_sub_crqs(adapter);
-	if (rc)
-		return;
 
 	memset(&crq, 0, sizeof(crq));
 	crq.request_capability.first = IBMVNIC_CRQ_CMD;
@@ -3691,7 +3686,14 @@ static int ibmvnic_init(struct ibmvnic_adapter *adapter)
 		return -1;
 	}
 
-	return 0;
+	rc = ibmvnic_init_sub_crqs(adapter);
+	if (rc) {
+		dev_err(dev, "Failed to init sub crqs\n");
+		ibmvnic_release_stats_token(adapter);
+		ibmvnic_release_crq_queue(adapter);
+	}
+
+	return rc;
 }
 
 static int ibmvnic_probe(struct vio_dev *dev, const struct vio_device_id *id)
