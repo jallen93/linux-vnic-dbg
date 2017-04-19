@@ -539,49 +539,6 @@ static int ibmvnic_init_tx_pools(struct net_device *netdev)
 	return 0;
 }
 
-static void ibmvnic_release_bounce_buffer(struct ibmvnic_adapter *adapter)
-{
-	struct device *dev = &adapter->vdev->dev;
-
-	if (!adapter->bounce_buffer)
-		return;
-
-	if (!dma_mapping_error(dev, adapter->bounce_buffer_dma)) {
-		dma_unmap_single(&adapter->vdev->dev,
-				 adapter->bounce_buffer_dma,
-				 adapter->bounce_buffer_size,
-				 DMA_BIDIRECTIONAL);
-		adapter->bounce_buffer_dma = DMA_ERROR_CODE;
-	}
-
-	kfree(adapter->bounce_buffer);
-	adapter->bounce_buffer = NULL;
-}
-
-static int ibmvnic_init_bounce_buffer(struct net_device *netdev)
-{
-	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
-	struct device *dev = &adapter->vdev->dev;
-
-	adapter->bounce_buffer_size =
-				(netdev->mtu + ETH_HLEN - 1) / PAGE_SIZE + 1;
-	adapter->bounce_buffer = kmalloc(adapter->bounce_buffer_size,
-					 GFP_KERNEL);
-	if (!adapter->bounce_buffer)
-		return -1;
-
-	adapter->bounce_buffer_dma = dma_map_single(dev, adapter->bounce_buffer,
-						    adapter->bounce_buffer_size,
-						    DMA_TO_DEVICE);
-	if (dma_mapping_error(dev, adapter->bounce_buffer_dma)) {
-		dev_err(dev, "Couldn't map bounce buffer\n");
-		kfree(adapter->bounce_buffer);
-		return -1;
-	}
-
-	return 0;
-}
-
 static int ibmvnic_login(struct net_device *netdev)
 {
 	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
@@ -622,7 +579,6 @@ static void ibmvnic_release_resources(struct ibmvnic_adapter *adapter)
 {
 	int i;
 
-	ibmvnic_release_bounce_buffer(adapter);
 	ibmvnic_release_tx_pools(adapter);
 	ibmvnic_release_rx_pools(adapter);
 
@@ -697,12 +653,7 @@ static int init_resources(struct ibmvnic_adapter *adapter)
 
 	netdev_err(netdev, "init tx pools\n");
 	rc = ibmvnic_init_tx_pools(netdev);
-	if (rc)
-		return rc;
 
-	netdev_err(netdev, "init bb\n");
-	rc = ibmvnic_init_bounce_buffer(netdev);
-	
 	return rc;
 }
 
@@ -1058,7 +1009,6 @@ static int ibmvnic_xmit(struct sk_buff *skb, struct net_device *netdev)
 	unsigned int tx_bytes = 0;
 	dma_addr_t data_dma_addr;
 	struct netdev_queue *txq;
-	bool used_bounce = false;
 	unsigned long lpar_rc;
 	union sub_crq tx_crq;
 	unsigned int offset;
@@ -1101,7 +1051,6 @@ static int ibmvnic_xmit(struct sk_buff *skb, struct net_device *netdev)
 	tx_buff->index = index;
 	tx_buff->pool_index = queue_num;
 	tx_buff->last_frag = true;
-	tx_buff->used_bounce = used_bounce;
 
 	memset(&tx_crq, 0, sizeof(tx_crq));
 	tx_crq.v1.first = IBMVNIC_CRQ_CMD;
@@ -1879,7 +1828,6 @@ restart_loop:
 					continue;
 
 				txbuff->data_dma[j] = 0;
-				txbuff->used_bounce = false;
 			}
 			/* if sub_crq was sent indirectly */
 			first = txbuff->indir_arr[0].generic.first;
@@ -3295,7 +3243,6 @@ static int post_migr_cleanup(struct ibmvnic_adapter *adapter)
 	for (i = 0; i < adapter->req_rx_queues; i++)
 		netif_napi_del(&adapter->napi[i]);
 
-	ibmvnic_release_bounce_buffer(adapter);
 	ibmvnic_release_tx_pools(adapter);
 	ibmvnic_release_rx_pools(adapter);
 
@@ -3841,7 +3788,6 @@ static unsigned long ibmvnic_get_desired_dma(struct vio_dev *vdev)
 	adapter = netdev_priv(netdev);
 
 	ret += PAGE_SIZE; /* the crq message queue */
-	ret += adapter->bounce_buffer_size;
 	ret += IOMMU_PAGE_ALIGN(sizeof(struct ibmvnic_statistics), tbl);
 
 	for (i = 0; i < adapter->req_tx_queues + adapter->req_rx_queues; i++)
