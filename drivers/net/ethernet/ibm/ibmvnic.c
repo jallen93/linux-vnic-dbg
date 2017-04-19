@@ -206,6 +206,57 @@ static long h_reg_sub_crq(unsigned long unit_address, unsigned long token,
 
 /* net_device_ops functions */
 
+static int reset_long_term_buffs(struct ibmvnic_adapter *adapter)
+{
+	struct ibmvnic_long_term_buff *ltb;
+	int tx_scrqs, rx_scrqs;
+	int i, j;
+
+	tx_scrqs = be32_to_cpu(adapter->login_rsp_buf->num_txsubm_subcrqs);
+	for (i = 0; i < tx_scrqs; i++) {
+		ltb = &adapter->tx_pool[i].long_term_buff;
+		memset(ltb->buff, 0, ltb->size);
+
+		init_completion(&adapter->fw_done);
+		send_request_map(adapter, ltb->addr,
+				 ltb->size, ltb->map_id);
+		wait_for_completion(&adapter->fw_done);
+		
+		memset(adapter->tx_pool[i].tx_buff, 0,
+		       adapter->req_tx_entries_per_subcrq * sizeof(struct ibmvnic_tx_buff));
+
+		for (j = 0; j < adapter->req_tx_entries_per_subcrq; j++)
+			adapter->tx_pool[i].free_map[j] = j;
+
+		adapter->tx_pool[i].consumer_index = 0;
+		adapter->tx_pool[i].producer_index = 0;
+	}
+
+
+	rx_scrqs = be32_to_cpu(adapter->login_rsp_buf->num_rxadd_subcrqs);
+	for (i = 0; i < rx_scrqs; i++) {
+		ltb = &adapter->rx_pool[i].long_term_buff;
+		memset(ltb->buff, 0, ltb->size);
+
+		init_completion(&adapter->fw_done);
+		send_request_map(adapter, ltb->addr,
+				 ltb->size, ltb->map_id);
+		wait_for_completion(&adapter->fw_done);
+		
+		for (j = 0; j < adapter->rx_pool[i].size; ++j)
+			adapter->rx_pool[i].free_map[j] = j;
+
+		memset(adapter->rx_pool[i].rx_buff, 0,
+		       adapter->rx_pool[i].size * sizeof(struct ibmvnic_rx_buff));
+
+		atomic_set(&adapter->rx_pool[i].available, 0);
+		adapter->rx_pool[i].next_alloc = 0;
+		adapter->rx_pool[i].next_free = 0;
+	}
+
+	return 0;
+}
+
 static int alloc_long_term_buff(struct ibmvnic_adapter *adapter,
 				struct ibmvnic_long_term_buff *ltb, int size)
 {
@@ -631,12 +682,10 @@ static int init_resources(struct ibmvnic_adapter *adapter)
 	if (rc)
 		return rc;
 
-	if (!adapter_is_resetting(adapter)) {
-		netdev_err(netdev, "init scrq irqs\n");
-		rc = init_sub_crq_irqs(adapter);
-		if (rc)
-			return rc;
-	}
+	netdev_err(netdev, "init scrq irqs\n");
+	rc = init_sub_crq_irqs(adapter);
+	if (rc)
+		return rc;
 
 	netdev_err(netdev, "creating napi's\n");
 	adapter->map_id = 1;
@@ -850,8 +899,10 @@ static int __ibmvnic_close(struct net_device *netdev)
 
 	if (adapter->napi) {
 		netdev_err(netdev, "napi disable rx queue\n");
-		for (i = 0; i < adapter->req_rx_queues; i++)
+		for (i = 0; i < adapter->req_rx_queues; i++) {
+			napi_synchronize(&adapter->napi[i]);
 			napi_disable(&adapter->napi[i]);
+		}
 	}
 
 	set_adapter_status(adapter, VNIC_CLOSED);
@@ -1251,8 +1302,6 @@ static int do_reset(struct ibmvnic_adapter *adapter,
 	/* remove the closed state so that the open starts as if coming from probe */
 	set_adapter_status(adapter, VNIC_PROBED);
 
-	ibmvnic_release_resources(adapter);
-
 	netdev_err(netdev, "calling init\n");
 	rc = ibmvnic_init(adapter);
 	if (rc) {
@@ -1274,14 +1323,11 @@ static int do_reset(struct ibmvnic_adapter *adapter,
 		return 0;
 	}
 
-	rtnl_lock();
-	rc = init_resources(adapter);
-	rtnl_unlock();
+	netdev_err(netdev, "Re-setting ltb's\n");
+	rc = reset_long_term_buffs(adapter);
 	if (rc) {
-		netdev_err(netdev, "failed to initialize resources\n");
-		return rc;
-
-		return rc;
+		netdev_err(netdev, "Failed to reset ltb's\n");
+		return 0;
 	}
 
 	if (reset_status & VNIC_CLOSED) {
