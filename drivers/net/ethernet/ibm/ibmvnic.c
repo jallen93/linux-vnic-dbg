@@ -730,7 +730,10 @@ static int __ibmvnic_open(struct net_device *netdev)
 	set_link_state(adapter, IBMVNIC_LOGICAL_LNK_UP);
 
 	dev_err(dev, "starting queues\n");
-	netif_tx_start_all_queues(netdev);
+	if (adapter_is_resetting(adapter))
+		netif_tx_wake_all_queues(netdev);
+	else
+		netif_tx_start_all_queues(netdev);
 
 	set_adapter_status(adapter, VNIC_OPEN);
 	return 0;
