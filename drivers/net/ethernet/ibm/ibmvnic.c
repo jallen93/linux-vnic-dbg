@@ -112,10 +112,11 @@ static void send_request_unmap(struct ibmvnic_adapter *, u8);
 static void send_login(struct ibmvnic_adapter *adapter);
 static void send_cap_queries(struct ibmvnic_adapter *adapter);
 static int init_sub_crq_irqs(struct ibmvnic_adapter *adapter);
-static int ibmvnic_init(struct ibmvnic_adapter *);
 static void ibmvnic_release_crq_queue(struct ibmvnic_adapter *);
 static void remove_buff_from_pool(struct ibmvnic_adapter *,
 				  struct ibmvnic_rx_buff *);
+static int reset_sub_crq_queues(struct ibmvnic_adapter *);
+static int close_sub_crq_queues(struct ibmvnic_adapter *);
 
 struct ibmvnic_stat {
 	char name[ETH_GSTRING_LEN];
@@ -1305,11 +1306,42 @@ static int do_reset(struct ibmvnic_adapter *adapter,
 	/* remove the closed state so that the open starts as if coming from probe */
 	set_adapter_status(adapter, VNIC_PROBED);
 
+	
+	if (rwi->reset_reason == VNIC_RESET_MOBILITY) {
+		rc = close_sub_crq_queues(adapter);
+		if (!rc)
+			rc = ibmvnic_reenable_crq_queue(adapter);
+		if (rc) {
+			netdev_err(netdev, "Adapter error, CRQ reset failed\n");
+			return rc;;
+		}
+	} else {
+		netdev_err(netdev, "re-setting CRQ\n");
+		rc = ibmvnic_reset_crq(adapter);
+		if (rc) {
+			netdev_err(netdev, "Failed to reser CRQ\n");
+			return rc;
+		}
+	}
+
+	netdev_err(netdev, "enable vio interrupts\n");
+	rc = vio_enable_interrupts(adapter->vdev);
+	if (rc) {
+		netdev_err(netdev, "Error %d enabling interrupts\n", rc);
+		return rc;
+	}
+
 	netdev_err(netdev, "calling init\n");
-	rc = ibmvnic_init(adapter);
+	rc = ibmvnic_send_crq_init(adapter);
 	if (rc) {
 		netdev_err(netdev, "init call failed\n");
 		return 0;
+	}
+
+	rc = reset_sub_crq_queues(adapter);
+	if (rc) {
+		netdev_err(netdev, "Failed to reset sub CRQs\n");
+		return rc;
 	}
 
 	/* If the adapter was in PROBE state prior to the reset, exit here. */
@@ -1735,15 +1767,11 @@ static int reset_sub_crq_queues(struct ibmvnic_adapter *adapter)
 	return rc;
 }
 
-static void release_sub_crq_queue(struct ibmvnic_adapter *adapter,
-				  struct ibmvnic_sub_crq_queue *scrq)
+static int close_scrq(struct ibmvnic_adapter *adapter,
+		      struct ibmvnic_sub_crq_queue *scrq)
 {
-	struct device *dev = &adapter->vdev->dev;
-	long rc;
+	int rc;
 
-	netdev_dbg(adapter->netdev, "Releasing sub-CRQ\n");
-
-	/* Close the sub-crqs */
 	do {
 		rc = plpar_hcall_norets(H_FREE_SUB_CRQ,
 					adapter->vdev->unit_address,
@@ -1752,8 +1780,40 @@ static void release_sub_crq_queue(struct ibmvnic_adapter *adapter,
 
 	if (rc)
 		netdev_err(adapter->netdev,
-			   "Failed to release sub-CRQ %016lx, rc=%ld\n",
+			   "Failed to release sub-CRQ %016lx, rc=%d\n",
 			   scrq->crq_num, rc);
+
+	return rc;
+}
+
+static int close_sub_crq_queues(struct ibmvnic_adapter *adapter)
+{
+	int i, rc;
+
+	netdev_err(adapter->netdev, "In close scrqs\n");
+	for (i = 0; i < adapter->req_tx_queues; i++) {
+		rc = close_scrq(adapter, adapter->tx_scrq[i]);
+		if (rc)
+			return rc;
+	}
+
+	for (i = 0; i < adapter->req_rx_queues; i++) {
+		rc = close_scrq(adapter, adapter->rx_scrq[i]);
+		if (rc)
+			return rc;
+	}
+
+	return 0;
+}
+
+static void release_sub_crq_queue(struct ibmvnic_adapter *adapter,
+				  struct ibmvnic_sub_crq_queue *scrq)
+{
+	struct device *dev = &adapter->vdev->dev;
+
+	netdev_dbg(adapter->netdev, "Releasing sub-CRQ\n");
+
+	close_scrq(adapter, scrq);
 
 	dma_unmap_single(dev, scrq->msg_token, 4 * PAGE_SIZE,
 			 DMA_BIDIRECTIONAL);
@@ -2357,14 +2417,30 @@ static int ibmvnic_send_crq(struct ibmvnic_adapter *adapter,
 
 static int ibmvnic_send_crq_init(struct ibmvnic_adapter *adapter)
 {
+	struct net_device *netdev = adapter->netdev;
+	unsigned long timeout = msecs_to_jiffies(30000);
 	union ibmvnic_crq crq;
+	int rc;
 
+	init_completion(&adapter->init_done);
+	
 	memset(&crq, 0, sizeof(crq));
 	crq.generic.first = IBMVNIC_CRQ_INIT_CMD;
 	crq.generic.cmd = IBMVNIC_CRQ_INIT;
-	netdev_dbg(adapter->netdev, "Sending CRQ init\n");
+	netdev_dbg(netdev, "Sending CRQ init\n");
 
-	return ibmvnic_send_crq(adapter, &crq);
+	rc = ibmvnic_send_crq(adapter, &crq);
+	if (rc) {
+		netdev_err(netdev, "Failed to send CRQ init\n");
+		return rc;
+	}
+
+	if (!wait_for_completion_timeout(&adapter->init_done, timeout)) {
+		netdev_err(netdev, "Initialization sequence timed out\n");
+		return -1;
+	}
+
+	return 0;
 }
 
 static int ibmvnic_send_crq_init_complete(struct ibmvnic_adapter *adapter)
@@ -3736,60 +3812,6 @@ map_failed:
 	return retrc;
 }
 
-static int ibmvnic_init(struct ibmvnic_adapter *adapter)
-{
-	struct device *dev = &adapter->vdev->dev;
-	unsigned long timeout = msecs_to_jiffies(30000);
-	int rc;
-
-	dev_err(dev, "In init\n");
-	if (adapter_is_resetting(adapter)) {
-		dev_err(dev, "re-setting CRQ\n");
-		rc = ibmvnic_reset_crq(adapter);
-		if (!rc) {
-			dev_err(dev, "enable vio interrupts\n");
-			rc = vio_enable_interrupts(adapter->vdev);
-			if (rc) {
-				dev_err(dev,
-					"Error %d enabling interrupts\n", rc);
-				return 0;
-			}
-		}
-	} else {
-		dev_err(dev, "Init crq q\n");
-		rc = ibmvnic_init_crq_queue(adapter);
-	}
-
-	if (rc) {
-		dev_err(dev, "Couldn't initialize crq. rc=%d\n", rc);
-		return rc;
-	}
-
-	dev_err(dev, "send init crq\n");
-	init_completion(&adapter->init_done);
-	ibmvnic_send_crq_init(adapter);
-
-	if (!wait_for_completion_timeout(&adapter->init_done, timeout)) {
-		dev_err(dev, "Initialization sequence timed out\n");
-		ibmvnic_release_crq_queue(adapter);
-		return -1;
-	}
-
-	if (adapter_is_resetting(adapter)) {
-		dev_err(dev, "resetting sub crq queues\n");
-		rc = reset_sub_crq_queues(adapter);
-	} else {
-		dev_err(dev, "initializing sub crqs\n");
-		rc = ibmvnic_init_sub_crqs(adapter);
-	}
-	if (rc) {
-		dev_err(dev, "Failed to init sub crqs\n");
-		ibmvnic_release_crq_queue(adapter);
-	}
-
-	return rc;
-}
-
 static int ibmvnic_probe(struct vio_dev *dev, const struct vio_device_id *id)
 {
 	struct ibmvnic_adapter *adapter;
@@ -3843,13 +3865,30 @@ static int ibmvnic_probe(struct vio_dev *dev, const struct vio_device_id *id)
 	mutex_init(&adapter->reset_lock);
 	INIT_LIST_HEAD(&adapter->reset_work_items);
 
-	dev_err(&dev->dev, "calling init\n");
-	rc = ibmvnic_init(adapter);
+	dev_err(&dev->dev, "Initializing CRQ\n");
+	rc = ibmvnic_init_crq_queue(adapter);
 	if (rc) {
+		dev_err(&dev->dev, "Failed to init CRQ\n");
+		free_netdev(netdev);
+		return rc;
+	}
+	
+	dev_err(&dev->dev, "calling init\n");
+	rc = ibmvnic_send_crq_init(adapter);
+	if (rc) {
+		dev_err(&dev->dev, "init call failed\n");
 		free_netdev(netdev);
 		return rc;
 	}
 
+	dev_err(&dev->dev, "initializing sub crqs\n");
+	rc = ibmvnic_init_sub_crqs(adapter);
+	if (rc) {
+		dev_err(&dev->dev, "Failed to init sub-CRQs\n");
+		free_netdev(netdev);
+		return rc;
+	}
+	
 	dev_err(&dev->dev, "set mtu\n");
 	netdev->mtu = adapter->req_mtu - ETH_HLEN;
 
