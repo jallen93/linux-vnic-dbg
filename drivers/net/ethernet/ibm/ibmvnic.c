@@ -1259,8 +1259,6 @@ static int do_reset(struct ibmvnic_adapter *adapter,
 
 	ibmvnic_release_resources(adapter);
 	ibmvnic_release_sub_crqs(adapter);
-	ibmvnic_release_crq_queue(adapter);
-	netdev_info(netdev, "Reset CRQ success\n");
 
 	netdev_err(netdev, "calling init\n");
 	rc = ibmvnic_init(adapter);
@@ -1340,7 +1338,7 @@ static void __vnic_reset(struct work_struct *work)
 		if (rwi->reset_reason == VNIC_RESET_MOBILITY) {
 			rc = ibmvnic_reenable_crq_queue(adapter);
 			if (rc) {
-				netdev_err(netdev, "Adapter error, reset failed\n");
+				netdev_err(netdev, "Adapter error, CRQ reset failed\n");
 				kfree(rwi);
 				continue;
 			}
@@ -3661,8 +3659,23 @@ static int ibmvnic_init(struct ibmvnic_adapter *adapter)
 	int rc;
 
 	dev_err(dev, "In init\n");
-	dev_err(dev, "Init crq q\n");
-	rc = ibmvnic_init_crq_queue(adapter);
+	if (adapter_is_resetting(adapter)) {
+		dev_err(dev, "re-setting CRQ\n");
+		rc = ibmvnic_reset_crq(adapter);
+		if (!rc) {
+			dev_err(dev, "enable vio interrupts\n");
+			rc = vio_enable_interrupts(adapter->vdev);
+			if (rc) {
+				dev_err(dev,
+					"Error %d enabling interrupts\n", rc);
+				return 0;
+			}
+		}
+	} else {
+		dev_err(dev, "Init crq q\n");
+		rc = ibmvnic_init_crq_queue(adapter);
+	}
+
 	if (rc) {
 		dev_err(dev, "Couldn't initialize crq. rc=%d\n", rc);
 		return rc;
