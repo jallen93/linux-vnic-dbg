@@ -709,10 +709,16 @@ static int init_resources(struct ibmvnic_adapter *adapter)
 static int set_link_state(struct ibmvnic_adapter *adapter, u8 link_state)
 {
 	struct net_device *netdev = adapter->netdev;
+	unsigned long timeout = msecs_to_jiffies(30000);
 	union ibmvnic_crq crq;
 	bool resend;
 	int rc;
 	
+	if (adapter->logical_link_state == link_state) {
+		netdev_dbg(netdev, "Link state already %d\n", link_state);
+		return 0;
+	}
+
 	netdev_err(netdev, "setting link state %d\n", link_state);
 	memset(&crq, 0, sizeof(crq));
 	crq.logical_link_state.first = IBMVNIC_CRQ_CMD;
@@ -729,7 +735,11 @@ static int set_link_state(struct ibmvnic_adapter *adapter, u8 link_state)
 			break;
 		}
 			
-		wait_for_completion(&adapter->init_done);
+		if (!wait_for_completion_timeout(&adapter->init_done,
+						 timeout)) {
+			netdev_err(netdev, "timeout waiting for link state\n");
+			return -1;
+		}
 
 		if (adapter->init_done_rc == 1) {
 			/* Partuial success, delay and re-send */
@@ -738,7 +748,7 @@ static int set_link_state(struct ibmvnic_adapter *adapter, u8 link_state)
 		}
 	} while (resend);
 
-	return rc;
+	return 0;
 }
 
 static int __ibmvnic_open(struct net_device *netdev)
