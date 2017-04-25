@@ -1310,10 +1310,10 @@ static int do_reset(struct ibmvnic_adapter *adapter,
 	if (rwi->reset_reason == VNIC_RESET_MOBILITY) {
 		rc = close_sub_crq_queues(adapter);
 		if (!rc)
-			rc = ibmvnic_reset_crq(adapter);
+			rc = ibmvnic_reenable_crq_queue(adapter);
 		if (rc) {
 			netdev_err(netdev, "Adapter error, CRQ reset failed\n");
-			return rc;
+			return rc;;
 		}
 	} else {
 		netdev_err(netdev, "re-setting CRQ\n");
