@@ -621,11 +621,6 @@ static int init_resources(struct ibmvnic_adapter *adapter)
 	struct net_device *netdev = adapter->netdev;
 	int i, rc;
 
-	netdev_err(netdev, "Init stats token\n");
-	rc = ibmvnic_init_stats_token(adapter);
-	if (rc)
-		return rc;
-
 	netdev_err(netdev, "setting q number\n");
 	rc = ibmvnic_set_real_num_queues(netdev);
 	if (rc)
@@ -3676,12 +3671,20 @@ static int ibmvnic_init(struct ibmvnic_adapter *adapter)
 		return rc;
 	}
 
+	dev_err(dev, "Init stats\n");
+	rc = ibmvnic_init_stats_token(adapter);
+	if (rc) {
+		ibmvnic_release_crq_queue(adapter);
+		return rc;
+	}
+
 	dev_err(dev, "send init crq\n");
 	init_completion(&adapter->init_done);
 	ibmvnic_send_crq_init(adapter);
 
 	if (!wait_for_completion_timeout(&adapter->init_done, timeout)) {
 		dev_err(dev, "Initialization sequence timed out\n");
+		ibmvnic_release_stats_token(adapter);
 		ibmvnic_release_crq_queue(adapter);
 		return -1;
 	}
@@ -3689,6 +3692,7 @@ static int ibmvnic_init(struct ibmvnic_adapter *adapter)
 	rc = ibmvnic_init_sub_crqs(adapter);
 	if (rc) {
 		dev_err(dev, "Failed to init sub crqs\n");
+		ibmvnic_release_stats_token(adapter);
 		ibmvnic_release_crq_queue(adapter);
 	}
 
