@@ -631,12 +631,10 @@ static int init_resources(struct ibmvnic_adapter *adapter)
 	if (rc)
 		return rc;
 
-	if (!adapter_is_resetting(adapter)) {
-		netdev_err(netdev, "init scrq irqs\n");
-		rc = init_sub_crq_irqs(adapter);
-		if (rc)
-			return rc;
-	}
+	netdev_err(netdev, "init scrq irqs\n");
+	rc = init_sub_crq_irqs(adapter);
+	if (rc)
+		return rc;
 
 	netdev_err(netdev, "creating napi's\n");
 	adapter->map_id = 1;
@@ -1255,6 +1253,7 @@ static int do_reset(struct ibmvnic_adapter *adapter,
 	set_adapter_status(adapter, VNIC_PROBED);
 
 	ibmvnic_release_resources(adapter);
+	ibmvnic_release_sub_crqs(adapter);
 
 	netdev_err(netdev, "calling init\n");
 	rc = ibmvnic_init(adapter);
@@ -1646,48 +1645,6 @@ static const struct ethtool_ops ibmvnic_ethtool_ops = {
 };
 
 /* Routines for managing CRQs/sCRQs  */
-static int reset_one_sub_crq_queue(struct ibmvnic_adapter *adapter,
-				   struct ibmvnic_sub_crq_queue *scrq)
-{
-	int rc;
-
-	netdev_err(adapter->netdev, "In reset one scrqs\n");
-	if (scrq->irq) {
-		free_irq(scrq->irq, scrq);
-		irq_dispose_mapping(scrq->irq);
-		scrq->irq = 0;
-	}
-
-	memset(scrq->msgs, 0, 2 * PAGE_SIZE);
-	scrq->cur = 0;
-
-	rc = h_reg_sub_crq(adapter->vdev->unit_address,
-			   scrq->msg_token, 4 * PAGE_SIZE,
-			   &scrq->crq_num, &scrq->hw_irq);
-	return rc;
-}
-
-static int reset_sub_crq_queues(struct ibmvnic_adapter *adapter)
-{
-	int i, rc;
-
-	netdev_err(adapter->netdev, "In reset scrqs\n");
-	for (i = 0; i < adapter->req_tx_queues; i++) {
-		rc = reset_one_sub_crq_queue(adapter, adapter->tx_scrq[i]);
-		if (rc)
-			return rc;
-	}
-
-	for (i = 0; i < adapter->req_rx_queues; i++) {
-		rc = reset_one_sub_crq_queue(adapter, adapter->rx_scrq[i]);
-		if (rc)
-			return rc;
-	}
-
-	netdev_err(adapter->netdev, "reset scrqs irqs\n");
-	rc = init_sub_crq_irqs(adapter);
-	return rc;
-}
 
 static void release_sub_crq_queue(struct ibmvnic_adapter *adapter,
 				  struct ibmvnic_sub_crq_queue *scrq)
@@ -3729,13 +3686,7 @@ static int ibmvnic_init(struct ibmvnic_adapter *adapter)
 		return -1;
 	}
 
-	if (adapter_is_resetting(adapter)) {
-		dev_err(dev, "resetting sub crq queues\n");
-		rc = reset_sub_crq_queues(adapter);
-	} else {
-		dev_err(dev, "initializing sub crqs\n");
-		rc = ibmvnic_init_sub_crqs(adapter);
-	}
+	rc = ibmvnic_init_sub_crqs(adapter);
 	if (rc) {
 		dev_err(dev, "Failed to init sub crqs\n");
 		ibmvnic_release_crq_queue(adapter);
