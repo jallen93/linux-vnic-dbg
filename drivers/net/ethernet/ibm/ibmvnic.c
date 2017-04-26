@@ -882,7 +882,7 @@ static int __ibmvnic_close(struct net_device *netdev)
 		}
 
 		for (i = 0; i < adapter->req_tx_queues; i++)
-			if (adapter->tx_scrq[i])
+			if (adapter->tx_scrq[i]->irq)
 				disable_irq(adapter->tx_scrq[i]->irq);
 	}
 
@@ -903,7 +903,7 @@ static int __ibmvnic_close(struct net_device *netdev)
 
 		netdev_err(netdev, "disabling scrqs\n");
 			for (i = 0; i < adapter->req_rx_queues; i++)
-				if (adapter->rx_scrq[i])
+				if (adapter->rx_scrq[i]->irq)
 					disable_irq(adapter->rx_scrq[i]->irq);
 	}
 
