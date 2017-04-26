@@ -874,8 +874,10 @@ static int __ibmvnic_close(struct net_device *netdev)
 				continue;
 
 			for (j = 0; j < tx_entries; j++) {
-				if (tx_pool->tx_buff[j].skb)
+				if (tx_pool->tx_buff[j].skb) {
 					dev_kfree_skb_any(tx_pool->tx_buff[j].skb);
+					tx_pool->tx_buff[j].skb = NULL;
+				}
 			}
 		}
 
