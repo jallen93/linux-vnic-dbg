@@ -2062,6 +2062,7 @@ static void ibmvnic_init_sub_crqs(struct ibmvnic_adapter *adapter, int retry)
 
 		adapter->req_tx_queues = adapter->opt_tx_comp_sub_queues;
 		adapter->req_rx_queues = adapter->opt_rx_comp_queues;
+		pr_err("tx queues = %d rx queues = %d\n", adapter->req_tx_queues, adapter->req_rx_queues);
 		adapter->req_rx_add_queues = adapter->max_rx_add_queues;
 
 		adapter->req_mtu = adapter->netdev->mtu + ETH_HLEN;
@@ -3391,6 +3392,9 @@ static void ibmvnic_handle_crq(union ibmvnic_crq *crq,
 		switch (gen_crq->cmd) {
 		case IBMVNIC_CRQ_INIT:
 			dev_info(dev, "Partner initialized\n");
+			pr_err("passive init\n");
+			adapter->from_passive_init = true;
+			complete(&adapter->init_done);
 #if 0
 			/* Send back a response */
 			rc = ibmvnic_send_crq_init_complete(adapter);
@@ -3729,6 +3733,8 @@ static int ibmvnic_init(struct ibmvnic_adapter *adapter)
 		return rc;
 	}
 
+	adapter->from_passive_init = false;
+
 	dev_err(dev, "send init crq\n");
 	init_completion(&adapter->init_done);
 	ibmvnic_send_crq_init(adapter);
@@ -3736,7 +3742,12 @@ static int ibmvnic_init(struct ibmvnic_adapter *adapter)
 	if (!wait_for_completion_timeout(&adapter->init_done, timeout)) {
 		dev_err(dev, "Initialization sequence timed out\n");
 		ibmvnic_release_stats_token(adapter);
-		ibmvnic_release_crq_queue(adapter);
+		return -1;
+	}
+
+	if (adapter->from_passive_init) {
+		set_adapter_status(adapter, VNIC_OPEN);
+		adapter->from_passive_init = false;
 		return -1;
 	}
 
