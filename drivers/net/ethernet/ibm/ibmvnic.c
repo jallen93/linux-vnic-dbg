@@ -832,7 +832,6 @@ static int ibmvnic_open(struct net_device *netdev)
 static void disable_sub_crqs(struct ibmvnic_adapter *adapter)
 {
 	int i;
-	return;
 
 	if (adapter->tx_scrq) {
 		for (i = 0; i < adapter->req_tx_queues; i++)
@@ -852,6 +851,7 @@ static int __ibmvnic_close(struct net_device *netdev)
 	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
 	struct ibmvnic_tx_pool *tx_pool;
 	int tx_scrqs;
+	u64 tx_entries;
 	int i, j;
 	int rc = 0;
 
@@ -859,9 +859,10 @@ static int __ibmvnic_close(struct net_device *netdev)
 	netdev_err(netdev, "disable tx queue\n");
 	netif_tx_stop_all_queues(netdev);
 
-	tx_scrqs = be32_to_cpu(adapter->login_rsp_buf->num_txsubm_subcrqs);
-	if (adapter->tx_scrq) {
-		u64 tx_entries = adapter->req_tx_entries_per_subcrq;
+	if (adapter->tx_pool) {
+		tx_scrqs = be32_to_cpu(adapter->login_rsp_buf->num_txsubm_subcrqs);
+		tx_entries = adapter->req_tx_entries_per_subcrq;
+
 		/* Free any remaining skbs in the tx buffer pools */
 		for (i = 0; i < tx_scrqs; i++) {
 			tx_pool = &adapter->tx_pool[i];
@@ -875,10 +876,6 @@ static int __ibmvnic_close(struct net_device *netdev)
 				}
 			}
 		}
-
-		for (i = 0; i < adapter->req_tx_queues; i++)
-			if (adapter->tx_scrq[i]->irq)
-				disable_irq(adapter->tx_scrq[i]->irq);
 	}
 
 	if (adapter->logical_link_state != IBMVNIC_LOGICAL_LNK_DN) {
@@ -895,11 +892,6 @@ static int __ibmvnic_close(struct net_device *netdev)
 			while (pending_scrq(adapter, adapter->rx_scrq[i]))
 				mdelay(100);
 		}
-
-		netdev_err(netdev, "disabling scrqs\n");
-			for (i = 0; i < adapter->req_rx_queues; i++)
-				if (adapter->rx_scrq[i]->irq)
-					disable_irq(adapter->rx_scrq[i]->irq);
 	}
 
 	disable_sub_crqs(adapter);
