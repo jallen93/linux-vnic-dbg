@@ -714,11 +714,6 @@ static int set_link_state(struct ibmvnic_adapter *adapter, u8 link_state)
 	bool resend;
 	int rc;
 	
-	if (adapter->logical_link_state == link_state) {
-		netdev_dbg(netdev, "Link state already %d\n", link_state);
-		return 0;
-	}
-
 	netdev_err(netdev, "setting link state %d\n", link_state);
 	memset(&crq, 0, sizeof(crq));
 	crq.logical_link_state.first = IBMVNIC_CRQ_CMD;
