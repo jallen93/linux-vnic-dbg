@@ -1408,7 +1408,6 @@ static void __vnic_reset(struct work_struct *work)
 			kfree(rwi);
 		}
 
-		ibmvnic_remove(adapter->vdev);
 		return;
 	}
 
