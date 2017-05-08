@@ -929,7 +929,7 @@ struct ibmvnic_inflight_cmd {
 
 enum ibmvnic_reset_reason {VNIC_RESET_NONE, VNIC_RESET_FAILOVER,
 			   VNIC_RESET_MOBILITY, VNIC_RESET_FATAL,
-			   VNIC_RESET_TIMEOUT};
+			   VNIC_RESET_NON_FATAL, VNIC_RESET_TIMEOUT};
 
 struct ibmvnic_reset_work_item {
 	enum ibmvnic_reset_reason reset_reason;

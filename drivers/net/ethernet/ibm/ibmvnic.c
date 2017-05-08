@@ -1300,6 +1300,9 @@ static int do_reset(struct ibmvnic_adapter *adapter,
 		return rc;
 	}
 
+	if (adapter->reset_reason == VNIC_RESET_NON_FATAL)
+		goto reset_open;
+
 	/* remove the closed state so that the open starts as if coming from probe */
 	set_adapter_status(adapter, VNIC_PROBED);
 
@@ -1344,6 +1347,7 @@ static int do_reset(struct ibmvnic_adapter *adapter,
 		return 0;
 	}
 
+reset_open:
 	netdev_err(netdev, "opening from reset\n");
 	rc = __ibmvnic_open(netdev);
 	if (rc) {
@@ -2864,6 +2868,8 @@ static void handle_error_indication(union ibmvnic_crq *crq,
 
 	if (crq->error_indication.flags & IBMVNIC_FATAL_ERROR)
 		vnic_reset(adapter, VNIC_RESET_FATAL);
+	else
+		vnic_reset(adapter, VNIC_RESET_NON_FATAL);
 }
 
 static void handle_change_mac_rsp(union ibmvnic_crq *crq,
