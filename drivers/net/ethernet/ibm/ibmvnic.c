@@ -859,6 +859,24 @@ static int __ibmvnic_close(struct net_device *netdev)
 	netdev_err(netdev, "disable tx queue\n");
 	netif_tx_stop_all_queues(netdev);
 
+	if (adapter->logical_link_state != IBMVNIC_LOGICAL_LNK_DN) {
+		rc = set_link_state(adapter, IBMVNIC_LOGICAL_LNK_DN);
+		if (rc)
+			netdev_err(netdev, "Failure setting link state down, bail\n");
+	}
+
+	if (adapter->rx_scrq) {
+		for (i = 0; i < adapter->req_rx_queues; i++) {
+			netdev_err(netdev, "Looking at queue %d\n", i);
+
+			while (pending_scrq(adapter, adapter->rx_scrq[i]))
+				mdelay(100);
+		}
+	}
+	netdev_err(netdev, "disable sub-crqs\n");
+	disable_sub_crqs(adapter);
+
+	netdev_err(netdev, "clean TX skbs\n");
 	if (adapter->tx_pool) {
 		tx_scrqs = be32_to_cpu(adapter->login_rsp_buf->num_txsubm_subcrqs);
 		tx_entries = adapter->req_tx_entries_per_subcrq;
@@ -877,24 +895,6 @@ static int __ibmvnic_close(struct net_device *netdev)
 			}
 		}
 	}
-
-	if (adapter->logical_link_state != IBMVNIC_LOGICAL_LNK_DN) {
-		rc = set_link_state(adapter, IBMVNIC_LOGICAL_LNK_DN);
-		if (rc)
-			netdev_err(netdev, "Failure setting link state down, bail\n");
-	}
-			
-
-	if (adapter->rx_scrq) {
-		for (i = 0; i < adapter->req_rx_queues; i++) {
-			netdev_err(netdev, "Looking at queue %d\n", i);
-		
-			while (pending_scrq(adapter, adapter->rx_scrq[i]))
-				mdelay(100);
-		}
-	}
-
-	disable_sub_crqs(adapter);
 
 	if (!adapter->napi_disabled) {
 		netdev_err(netdev, "napi disable rx queue\n");
@@ -3825,6 +3825,7 @@ static int ibmvnic_remove(struct vio_dev *dev)
 	struct net_device *netdev = dev_get_drvdata(&dev->dev);
 	struct ibmvnic_adapter *adapter = netdev_priv(netdev);
 
+	netif_tx_disable(netdev);
 	netdev_err(netdev, "Removing vnic\n");
 	set_adapter_status(adapter, VNIC_REMOVING);
 	unregister_netdev(netdev);
