@@ -1183,6 +1183,14 @@ static int ibmvnic_xmit(struct sk_buff *skb, struct net_device *netdev)
 		tx_dropped++;
 		tx_buff->skb = NULL;
 		ret = NETDEV_TX_OK;
+		if (lpar_rc == H_CLOSED) {
+			/* Disable TX and report carrier off if queue is closed.
+			 * Firmware guarantees that a signal will be sent to the
+			 * driver, triggering a reset or some other action.
+			 */
+			netif_tx_stop_all_queues(netdev);
+			netif_carrier_off(netdev);
+		}
 		goto out;
 	}
 
