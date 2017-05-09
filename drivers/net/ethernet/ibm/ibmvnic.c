@@ -243,6 +243,17 @@ static void free_long_term_buff(struct ibmvnic_adapter *adapter,
 	dma_free_coherent(dev, ltb->size, ltb->buff, ltb->addr);
 }
 
+static void ibmvnic_deactivate_rx_pools(struct ibmvnic_adapter *adapter)
+{
+	int i;
+
+	for (i = 0; i < be32_to_cpu(adapter->login_rsp_buf->num_rxadd_subcrqs);
+	     i++) {
+		if (adapter->rx_pool[i].active)
+			adapter->rx_pool[i].active = 0;
+	}
+}
+
 static void replenish_rx_pool(struct ibmvnic_adapter *adapter,
 			      struct ibmvnic_rx_pool *pool)
 {
@@ -330,6 +341,9 @@ failure:
 	dev_kfree_skb_any(skb);
 	adapter->replenish_add_buff_failure++;
 	atomic_add(buffers_added, &pool->available);
+
+	if (lpar_rc == H_CLOSED)
+		ibmvnic_deactivate_rx_pools(adapter);
 }
 
 static void replenish_pools(struct ibmvnic_adapter *adapter)
@@ -1551,7 +1565,8 @@ restart_poll:
 		frames_processed++;
 	}
 	/* clean once more in case any slipped through */
-	if (!(adapter->status & VNIC_CLOSING))
+	if (!(adapter->status & VNIC_CLOSING)
+	    && adapter->rx_pool[scrq_num].active)
 		replenish_rx_pool(adapter, &adapter->rx_pool[scrq_num]);
 
 	if (frames_processed < budget) {
