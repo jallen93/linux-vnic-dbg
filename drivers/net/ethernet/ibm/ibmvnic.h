@@ -1054,7 +1054,7 @@ struct ibmvnic_adapter {
 	enum ibmvnic_reset_reason reset_reason;
 	struct work_struct ibmvnic_reset;
 	struct list_head reset_work_items;
-	bool napi_disabled, from_passive_init;
+	bool napi_disabled, from_passive_init, sending_init_crq;
 };
 
 static inline void clear_adapter_status(struct ibmvnic_adapter *adapter,
