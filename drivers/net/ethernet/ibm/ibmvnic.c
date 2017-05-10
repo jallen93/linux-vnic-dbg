@@ -1315,7 +1315,7 @@ static int do_reset(struct ibmvnic_adapter *adapter,
 	rc = ibmvnic_init(adapter);
 	if (rc) {
 		netdev_err(netdev, "init call failed\n");
-		return rc;
+		return 0;
 	}
 
 	/* If the adapter was in PROBE state prior to the reset, exit here. */
@@ -1337,6 +1337,8 @@ static int do_reset(struct ibmvnic_adapter *adapter,
 	rtnl_unlock();
 	if (rc) {
 		netdev_err(netdev, "failed to initialize resources\n");
+		return rc;
+
 		return rc;
 	}
 
@@ -1404,16 +1406,12 @@ static void __vnic_reset(struct work_struct *work)
 	}
 
 	if (rc) {
-		if (rc != -2) {
-			list_for_each_entry_safe(rwi, n,
-						 &adapter->reset_work_items, list) {
-				list_del(&rwi->list);
-				kfree(rwi);
-			}
+		list_for_each_entry_safe(rwi, n,
+					 &adapter->reset_work_items, list) {
+			list_del(&rwi->list);
+			kfree(rwi);
 		}
 
-		set_adapter_status(adapter, VNIC_OPEN);
-		mutex_unlock(&adapter->reset_lock);
 		return;
 	}
 
@@ -3389,13 +3387,17 @@ static void ibmvnic_handle_crq(union ibmvnic_crq *crq,
 		switch (gen_crq->cmd) {
 		case IBMVNIC_CRQ_INIT:
 			dev_info(dev, "Partner initialized\n");
-			if (adapter->sending_init_crq) {
-				adapter->from_passive_init = true;
-				complete(&adapter->init_done);
-			}
-
-			vnic_reset(adapter, VNIC_RESET_FAILOVER);
-
+			pr_err("passive init\n");
+			adapter->from_passive_init = true;
+			complete(&adapter->init_done);
+#if 0
+			/* Send back a response */
+			rc = ibmvnic_send_crq_init_complete(adapter);
+			if (!rc)
+				vnic_reset(adapter);
+			else
+				dev_err(dev, "Can't send initrsp rc=%ld\n", rc);
+#endif
 			break;
 		case IBMVNIC_CRQ_INIT_COMPLETE:
 			dev_info(dev, "Partner initialization complete\n");
@@ -3413,6 +3415,7 @@ static void ibmvnic_handle_crq(union ibmvnic_crq *crq,
 		} else if (gen_crq->cmd == IBMVNIC_DEVICE_FAILOVER) {
 			netif_carrier_off(netdev);
 			dev_info(dev, "Backing device failover detected\n");
+			vnic_reset(adapter, VNIC_RESET_FAILOVER);
 		} else {
 			/* The adapter lost the connection */
 			dev_err(dev, "Virtual Adapter failed (rc=%d)\n",
@@ -3729,27 +3732,18 @@ static int ibmvnic_init(struct ibmvnic_adapter *adapter)
 
 	dev_err(dev, "send init crq\n");
 	init_completion(&adapter->init_done);
-	adapter->sending_init_crq = true;
-	rc = ibmvnic_send_crq_init(adapter);
-	if (rc) {
-		dev_err(dev, "Send init crq failed\n");
-		ibmvnic_release_stats_token(adapter);
-		return -1;
-	}
+	ibmvnic_send_crq_init(adapter);
 
 	if (!wait_for_completion_timeout(&adapter->init_done, timeout)) {
 		dev_err(dev, "Initialization sequence timed out\n");
-		adapter->sending_init_crq = false;
 		ibmvnic_release_stats_token(adapter);
 		return -1;
 	}
-
-	adapter->sending_init_crq = false;
 
 	if (adapter->from_passive_init) {
 		set_adapter_status(adapter, VNIC_OPEN);
 		adapter->from_passive_init = false;
-		return -2;
+		return -1;
 	}
 
 	return 0;
